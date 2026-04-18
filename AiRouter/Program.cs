@@ -1,8 +1,14 @@
 using System.Diagnostics;
+using System.Management;
+using System.Runtime.Versioning;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using System.Net.Http.Headers;
+
+// This application targets Windows only (published as win-x64 self-contained).
+[assembly: SupportedOSPlatform("windows")]
 
 namespace AiRouter;
 
@@ -46,17 +52,6 @@ class ProcessConfig
 
     // Seconds to wait after a fresh start before forwarding the first request (default: 2)
     public int StartupDelaySeconds { get; set; } = 2;
-
-    // OS process name used to detect a pre-existing instance (without extension).
-    // If omitted it is derived automatically from FileName (basename without extension).
-    // Example: if FileName is "C:\llama\llama-server.exe" this defaults to "llama-server".
-    public string? ProcessName { get; set; }
-
-    // Resolved process name: ProcessName if set, otherwise basename of FileName without extension.
-    public string ResolvedProcessName =>
-        !string.IsNullOrWhiteSpace(ProcessName)
-            ? ProcessName
-            : Path.GetFileNameWithoutExtension(FileName.Trim());
 }
 
 // ---------------------------------------------------------------------------
@@ -81,6 +76,7 @@ class ProcessManager : IDisposable
 
     // Ensures the process is running, starting/restarting if necessary.
     // Must be called before forwarding each request to this rule's backend.
+    [SupportedOSPlatform("windows")]
     public async Task EnsureRunningAsync(CancellationToken ct = default)
     {
         await _lock.WaitAsync(ct);
@@ -109,7 +105,7 @@ class ProcessManager : IDisposable
                 existing.EnableRaisingEvents = true;
                 existing.Exited += (_, _) =>
                     Console.WriteLine($"[proc:{_label}] Pre-existing process (PID {existing.Id}) exited.");
-                Console.WriteLine($"[proc:{_label}] Found pre-existing '{_cfg.ResolvedProcessName}' (PID {existing.Id}), attaching — will NOT terminate on router exit.");
+                Console.WriteLine($"[proc:{_label}] Found pre-existing '{_cfg.FileName}' (PID {existing.Id}), attaching — will NOT terminate on router exit.");
                 return;
             }
 
@@ -199,20 +195,109 @@ class ProcessManager : IDisposable
         }
     }
 
-    // Looks up a running OS process by the configured process name.
+    // Looks up a running OS process whose executable path and arguments match the config.
+    // Uses WMI Win32_Process to read the full command line of each candidate process.
+    [SupportedOSPlatform("windows")]
     private Process? FindExistingProcess()
     {
-        var name = _cfg.ResolvedProcessName;
-        if (string.IsNullOrWhiteSpace(name)) return null;
+        // Resolve the configured FileName to a full path so we can compare apples-to-apples.
+        // If FileName has no directory component (e.g. "pwsh") we search PATH via Where.exe.
+        var resolvedExe = ResolveExecutablePath(_cfg.FileName);
+
         try
         {
-            return Process.GetProcessesByName(name).FirstOrDefault();
+            // WMI query: fetch ExecutablePath and CommandLine for every running process.
+            using var searcher = new ManagementObjectSearcher(
+                "SELECT ProcessId, ExecutablePath, CommandLine FROM Win32_Process");
+            using var results = searcher.Get();
+
+            foreach (ManagementObject mo in results)
+            {
+                var pid        = Convert.ToInt32(mo["ProcessId"]);
+                var exePath    = mo["ExecutablePath"]  as string ?? string.Empty;
+                var cmdLine    = mo["CommandLine"]     as string ?? string.Empty;
+
+                if (!ExeMatches(exePath, resolvedExe)) continue;
+                if (!ArgumentsMatch(cmdLine, exePath, _cfg.Arguments)) continue;
+
+                try
+                {
+                    var proc = Process.GetProcessById(pid);
+                    Console.WriteLine($"[proc:{_label}] Found pre-existing process matching '{_cfg.FileName} {_cfg.Arguments}' (PID {pid}).");
+                    return proc;
+                }
+                catch { /* process exited between query and GetProcessById */ }
+            }
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[proc:{_label}] Warning: could not enumerate processes by name '{name}': {ex.Message}");
-            return null;
+            Console.WriteLine($"[proc:{_label}] Warning: WMI process scan failed: {ex.Message}");
         }
+
+        return null;
+    }
+
+    // True when the WMI ExecutablePath matches the configured executable.
+    [SupportedOSPlatform("windows")]
+    private static bool ExeMatches(string wmiExePath, string? resolvedExe)
+    {
+        if (string.IsNullOrEmpty(wmiExePath)) return false;
+        if (string.IsNullOrEmpty(resolvedExe)) return false;
+        return string.Equals(
+            Path.GetFullPath(wmiExePath),
+            Path.GetFullPath(resolvedExe),
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    // True when the WMI CommandLine contains the expected arguments.
+    // CommandLine = "<exe-path>" <arguments>, so we strip the exe part first.
+    [SupportedOSPlatform("windows")]
+    private static bool ArgumentsMatch(string cmdLine, string exePath, string expectedArgs)
+    {
+        // Normalise whitespace for comparison
+        expectedArgs = expectedArgs.Trim();
+
+        // Strip the leading exe token from the command line.
+        // The exe may appear quoted ("C:\path\exe.exe") or unquoted.
+        string argsFromCmdLine;
+        if (cmdLine.StartsWith('"'))
+        {
+            var closeQuote = cmdLine.IndexOf('"', 1);
+            argsFromCmdLine = closeQuote >= 0
+                ? cmdLine[(closeQuote + 1)..].TrimStart()
+                : cmdLine;
+        }
+        else
+        {
+            var firstSpace = cmdLine.IndexOf(' ');
+            argsFromCmdLine = firstSpace >= 0
+                ? cmdLine[(firstSpace + 1)..].TrimStart()
+                : string.Empty;
+        }
+
+        return string.Equals(argsFromCmdLine, expectedArgs, StringComparison.OrdinalIgnoreCase);
+    }
+
+    // Resolves a bare executable name (e.g. "pwsh") to its full path using PATH lookup.
+    // Returns the original string if resolution fails or if it already looks absolute.
+    private static string? ResolveExecutablePath(string fileName)
+    {
+        if (string.IsNullOrWhiteSpace(fileName)) return null;
+        if (Path.IsPathRooted(fileName)) return fileName;
+
+        // Try appending common extensions if missing
+        var extensions = new[] { ".exe", ".cmd", ".bat", "" };
+        var pathDirs   = (Environment.GetEnvironmentVariable("PATH") ?? string.Empty)
+                         .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries);
+
+        foreach (var dir in pathDirs)
+        foreach (var ext in extensions)
+        {
+            var candidate = Path.Combine(dir, fileName + ext);
+            if (File.Exists(candidate)) return Path.GetFullPath(candidate);
+        }
+
+        return fileName; // fallback: return as-is, ExeMatches will just not match
     }
 
     private string SafeExitCode()
@@ -313,17 +398,31 @@ class ProcessRegistry : IDisposable
 // Routing model
 // ---------------------------------------------------------------------------
 
-class RoutingRule
+// Plain data class bound by IConfiguration — only simple/supported property types.
+// Keeping Regex and ProcessManager out of this class eliminates SYSLIB1100/1101.
+class RoutingRuleConfig
 {
     public string Pattern { get; set; } = string.Empty;
     public string BaseUrl { get; set; } = string.Empty;
-
-    // Optional – if set the router will ensure this process is running before proxying
     public ProcessConfig? Process { get; set; }
+}
 
-    // Runtime-only fields (not deserialised from config)
-    public Regex? CompiledRegex { get; set; }
-    public ProcessManager? ProcessManager { get; set; }
+// Runtime wrapper: holds the compiled/resolved fields alongside the raw config.
+class RoutingRule
+{
+    public RoutingRule(RoutingRuleConfig cfg, Regex regex, ProcessManager? mgr)
+    {
+        Config         = cfg;
+        CompiledRegex  = regex;
+        ProcessManager = mgr;
+    }
+
+    public RoutingRuleConfig Config  { get; }
+    public string Pattern            => Config.Pattern;
+    public string BaseUrl            => Config.BaseUrl;
+    public ProcessConfig? Process    => Config.Process;
+    public Regex          CompiledRegex  { get; }
+    public ProcessManager? ProcessManager { get; }
 }
 
 // ---------------------------------------------------------------------------
@@ -579,12 +678,25 @@ class Router : IDisposable
         if (res.HasStarted) { Console.WriteLine($"[warn] Cannot write error ({status}): {message}"); return; }
         res.StatusCode = status;
         res.ContentType = "application/json";
-        var body = JsonSerializer.Serialize(new { error = new { type = "proxy_error", message } });
+        var body = JsonSerializer.Serialize(
+            new ProxyErrorResponse(new ProxyErrorDetail("proxy_error", message)),
+            AiRouterJsonContext.Default.ProxyErrorResponse);
         await res.WriteAsync(body);
     }
 
     public void Dispose() { /* ProcessManagers are owned by ProcessRegistry */ }
 }
+
+// ---------------------------------------------------------------------------
+// Trim-safe JSON serialization for error responses
+// ---------------------------------------------------------------------------
+
+record ProxyErrorDetail(string type, string message);
+record ProxyErrorResponse(ProxyErrorDetail error);
+
+[JsonSerializable(typeof(ProxyErrorResponse))]
+[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
+partial class AiRouterJsonContext : JsonSerializerContext { }
 
 // ---------------------------------------------------------------------------
 // Entry point
@@ -704,7 +816,7 @@ class Program
     // Reads current IConfiguration and builds a fully compiled RouterSnapshot.
     static RouterSnapshot BuildSnapshot(IConfiguration config, ProcessRegistry registry)
     {
-        var rules = config.GetSection("RoutingRules").Get<List<RoutingRule>>()
+        var rawRules = config.GetSection("RoutingRules").Get<List<RoutingRuleConfig>>()
             ?? throw new InvalidOperationException("RoutingRules missing from configuration");
 
         var apiKeysRaw = config.GetSection("ApiKeys").Get<Dictionary<string, string>>()
@@ -712,12 +824,12 @@ class Program
         var apiKeys = ConfigHelper.ResolveAll(apiKeysRaw, config);
         var defaultApiKey = ConfigHelper.Resolve(config["DefaultApiKey"] ?? string.Empty, config);
 
-        foreach (var rule in rules)
+        var rules = rawRules.Select(cfg =>
         {
-            rule.CompiledRegex = new Regex(rule.Pattern, RegexOptions.Compiled | RegexOptions.IgnoreCase);
-            if (rule.Process is not null)
-                rule.ProcessManager = registry.GetOrCreate(rule.Process, rule.Pattern);
-        }
+            var regex = new Regex(cfg.Pattern, RegexOptions.Compiled | RegexOptions.IgnoreCase);
+            var mgr   = cfg.Process is not null ? registry.GetOrCreate(cfg.Process, cfg.Pattern) : null;
+            return new RoutingRule(cfg, regex, mgr);
+        }).ToList();
 
         return new RouterSnapshot(rules, apiKeys, defaultApiKey);
     }

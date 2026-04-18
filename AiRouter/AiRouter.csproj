@@ -5,11 +5,32 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <PublishReadyToRun>true</PublishReadyToRun>
+    <PublishTrimmed>true</PublishTrimmed>
+    <!-- Suppress trim warnings from ASP.NET Core internals that are safe to ignore -->
+    <TrimmerRootDescriptor>TrimmerRoots.xml</TrimmerRootDescriptor>
+    <SuppressTrimAnalysisWarnings>false</SuppressTrimAnalysisWarnings>
+    <!-- Suppress IL2026/IL2104 from System.Management/CodeDom internals (ManagementClassGenerator)
+         which we never invoke; Win32_Process querying works correctly after assembly rooting. -->
+    <NoWarn>$(NoWarn);IL2026;IL2104</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.Extensions.Configuration.EnvironmentVariables" Version="10.0.6" />
-    <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.6" />
+    <!-- Keep entire System.Management and System.CodeDom assemblies:
+         they are not trim-annotated and use reflection internally.
+         We only use Win32_Process querying; ManagementClassGenerator is never invoked. -->
+    <TrimmerRootAssembly Include="System.Management" />
+    <TrimmerRootAssembly Include="System.CodeDom" />
+  </ItemGroup>
+
+  <ItemGroup>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Management" Version="10.0.6" />
   </ItemGroup>
 
 </Project>

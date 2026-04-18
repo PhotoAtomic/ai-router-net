@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Instructs the trimmer to preserve types that are instantiated via reflection
+  by IConfiguration.Get<T>() / JSON deserialization at runtime.
+-->
+<linker>
+  <assembly fullname="AiRouter">
+	<!-- Routing config types bound by IConfiguration.Get<T>() -->
+	<type fullname="AiRouter.RoutingRule"   preserve="all" />
+	<type fullname="AiRouter.ProcessConfig" preserve="all" />
+  </assembly>
+</linker>
