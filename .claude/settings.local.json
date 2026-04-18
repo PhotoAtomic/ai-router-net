@@ -8,7 +8,8 @@
       "Bash(npm list *)",
       "Bash(winget upgrade *)",
       "Bash(winget search *)",
-      "Bash(winget install *)"
+      "Bash(winget install *)",
+      "Skill(claude-api)"
     ]
   }
 }

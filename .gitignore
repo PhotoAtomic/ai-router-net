@@ -480,3 +480,10 @@ $RECYCLE.BIN/
 
 # Vim temporary swap files
 *.swp
+/Llama.cpp
+/AiRouter.exe
+/AiRouter.staticwebassets.endpoints.json
+/appsettings.json
+/aspnetcorev2_inprocess.dll
+/dotnet-tools.json
+/web.config
