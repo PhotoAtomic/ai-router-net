@@ -769,10 +769,10 @@ class Program
         app.Lifetime.ApplicationStopping.Register(() => router.Dispose());
 
         // --- Background keyboard listener ------------------------------------
-        Console.WriteLine("[keys] Press Ctrl+K to kill all managed processes.");
+        Console.WriteLine("[keys] Ctrl+K = kill managed processes  |  Ctrl+U = kill processes + shut down router");
         Console.WriteLine();
         using var keyListenerCts = new CancellationTokenSource();
-        var keyListenerTask = Task.Run(() => KeyListenerAsync(registry, keyListenerCts.Token));
+        var keyListenerTask = Task.Run(() => KeyListenerAsync(registry, app.Lifetime, keyListenerCts.Token));
 
         await app.RunAsync();
 
@@ -785,8 +785,8 @@ class Program
         registry.Dispose();
     }
 
-    // Runs on a background thread; polls for Ctrl+K
-    static async Task KeyListenerAsync(ProcessRegistry registry, CancellationToken ct)
+    // Runs on a background thread; polls for Ctrl+K and Ctrl+U
+    static async Task KeyListenerAsync(ProcessRegistry registry, IHostApplicationLifetime lifetime, CancellationToken ct)
     {
         try
         {
@@ -795,12 +795,37 @@ class Program
                 if (Console.KeyAvailable)
                 {
                     var key = Console.ReadKey(intercept: true);
+
                     if (key.Key == ConsoleKey.K &&
                         (key.Modifiers & ConsoleModifiers.Control) != 0)
                     {
                         Console.WriteLine();
-                        Console.WriteLine("[keys] Ctrl+K detected — killing all managed processes…");
+                        Console.WriteLine("[keys] Ctrl+K — killing all owned managed processes…");
                         await registry.KillAllAsync();
+                    }
+                    else if (key.Key == ConsoleKey.U &&
+                             (key.Modifiers & ConsoleModifiers.Control) != 0)
+                    {
+                        Console.WriteLine();
+                        Console.Write("[keys] Ctrl+U — kill all managed processes and shut down the router? [Y/n]: ");
+                        string? answer;
+                        try { answer = Console.ReadLine(); }
+                        catch { answer = "n"; }
+
+                        if (!string.IsNullOrWhiteSpace(answer) &&
+                            !answer.Trim().Equals("y", StringComparison.OrdinalIgnoreCase))
+                        {
+                            Console.WriteLine("[keys] Aborted.");
+                        }
+                        else
+                        {
+                            Console.WriteLine("[keys] Killing owned processes…");
+                            await registry.KillAllAsync();
+                            Console.WriteLine("[keys] Stopping router…");
+                            // StopApplication signals Kestrel to stop accepting new requests
+                            // and lets in-flight requests drain (graceful shutdown).
+                            lifetime.StopApplication();
+                        }
                     }
                 }
                 else
