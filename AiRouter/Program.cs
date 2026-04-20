@@ -772,7 +772,7 @@ class Program
         Console.WriteLine("[keys] Ctrl+K = kill managed processes  |  Ctrl+U = kill processes + shut down router");
         Console.WriteLine();
         using var keyListenerCts = new CancellationTokenSource();
-        var keyListenerTask = Task.Run(() => KeyListenerAsync(registry, app.Lifetime, keyListenerCts.Token));
+        var keyListenerTask = Task.Run(() => KeyListenerAsync(registry, keyListenerCts.Token));
 
         await app.RunAsync();
 
@@ -786,7 +786,7 @@ class Program
     }
 
     // Runs on a background thread; polls for Ctrl+K and Ctrl+U
-    static async Task KeyListenerAsync(ProcessRegistry registry, IHostApplicationLifetime lifetime, CancellationToken ct)
+    static async Task KeyListenerAsync(ProcessRegistry registry, CancellationToken ct)
     {
         try
         {
@@ -821,10 +821,7 @@ class Program
                         {
                             Console.WriteLine("[keys] Killing owned processes…");
                             await registry.KillAllAsync();
-                            Console.WriteLine("[keys] Stopping router…");
-                            // StopApplication signals Kestrel to stop accepting new requests
-                            // and lets in-flight requests drain (graceful shutdown).
-                            lifetime.StopApplication();
+                            Console.WriteLine("[keys] Done. Router keeps running.");
                         }
                     }
                 }
