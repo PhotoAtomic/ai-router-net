@@ -404,6 +404,7 @@ class RoutingRuleConfig
 {
     public string Pattern { get; set; } = string.Empty;
     public string BaseUrl { get; set; } = string.Empty;
+    public string? ForceModel { get; set; }
     public ProcessConfig? Process { get; set; }
 }
 
@@ -420,6 +421,7 @@ class RoutingRule
     public RoutingRuleConfig Config  { get; }
     public string Pattern            => Config.Pattern;
     public string BaseUrl            => Config.BaseUrl;
+    public string? ForceModel        => Config.ForceModel;
     public ProcessConfig? Process    => Config.Process;
     public Regex          CompiledRegex  { get; }
     public ProcessManager? ProcessManager { get; }
@@ -459,10 +461,12 @@ class Router : IDisposable
     // Snapshot is swapped atomically; in-flight requests hold a local reference
     // grabbed at the start of HandleMessagesAsync, so reloads never break them.
     private volatile RouterSnapshot _snapshot;
+    private readonly RequestLogger? _logger;
 
-    public Router(RouterSnapshot snapshot)
+    public Router(RouterSnapshot snapshot, RequestLogger? logger = null)
     {
         _snapshot = snapshot;
+        _logger = logger;
     }
 
     // Hot-reload: called whenever appsettings.json changes.
@@ -527,6 +531,17 @@ class Router : IDisposable
 
         var targetUrl = rule.BaseUrl.TrimEnd('/') + MessagesPath;
         Console.WriteLine($"[route] {model} → {targetUrl}  (rule: {rule.Pattern})");
+
+        // --- Replace model in body if ForceModel is configured ---------------
+        if (!string.IsNullOrEmpty(rule.ForceModel))
+        {
+            body = ReplaceModel(body, rule.ForceModel);
+            Console.WriteLine($"[route] model overridden: '{model}' → '{rule.ForceModel}'");
+        }
+
+        // --- Log request (if logging is enabled) -----------------------------
+        if (_logger is not null)
+            await _logger.LogAsync(model, rule.Pattern, targetUrl, req.Headers, body);
 
         // --- Ensure managed process is running (if configured for this rule) -
         if (rule.ProcessManager is not null)
@@ -673,6 +688,41 @@ class Router : IDisposable
         catch { return null; }
     }
 
+    // Replaces the "model" field value in the JSON body with the given override.
+    private static string ReplaceModel(string json, string newModel)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var dict = new Dictionary<string, JsonElement>();
+            foreach (var prop in doc.RootElement.EnumerateObject())
+                dict[prop.Name] = prop.Value;
+
+            using var ms = new System.IO.MemoryStream();
+            using var writer = new Utf8JsonWriter(ms);
+            writer.WriteStartObject();
+            foreach (var (key, value) in dict)
+            {
+                if (string.Equals(key, "model", StringComparison.OrdinalIgnoreCase))
+                {
+                    writer.WriteString("model", newModel);
+                }
+                else
+                {
+                    writer.WritePropertyName(key);
+                    value.WriteTo(writer);
+                }
+            }
+            writer.WriteEndObject();
+            writer.Flush();
+            return Encoding.UTF8.GetString(ms.ToArray());
+        }
+        catch
+        {
+            return json; // fallback: leave body untouched
+        }
+    }
+
     private static async Task WriteErrorAsync(HttpResponse res, int status, string message)
     {
         if (res.HasStarted) { Console.WriteLine($"[warn] Cannot write error ({status}): {message}"); return; }
@@ -699,6 +749,71 @@ record ProxyErrorResponse(ProxyErrorDetail error);
 partial class AiRouterJsonContext : JsonSerializerContext { }
 
 // ---------------------------------------------------------------------------
+// RequestLogger – appends incoming request details to a log file
+// ---------------------------------------------------------------------------
+
+class RequestLogger : IDisposable
+{
+    private readonly string _path;
+    private readonly SemaphoreSlim _lock = new(1, 1);
+
+    // Headers worth recording (excluding auth which is redacted, excluding noise)
+    private static readonly HashSet<string> RelevantHeaders = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "content-type", "anthropic-version", "anthropic-beta", "user-agent", "x-request-id"
+    };
+
+    public RequestLogger(string path)
+    {
+        _path = path;
+        Console.WriteLine($"[log] Logging requests to: {path}");
+    }
+
+    public async Task LogAsync(string model, string matchedRule, string targetUrl,
+        IHeaderDictionary headers, string body)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine($"--- {DateTimeOffset.Now:O} ---");
+        sb.AppendLine($"Model  : {model}");
+        sb.AppendLine($"Rule   : {matchedRule}");
+        sb.AppendLine($"Target : {targetUrl}");
+
+        foreach (var (name, values) in headers)
+        {
+            var lower = name.ToLowerInvariant();
+            if (lower is "x-api-key" or "authorization")
+                sb.AppendLine($"{name}: [redacted]");
+            else if (RelevantHeaders.Contains(lower))
+                sb.AppendLine($"{name}: {string.Join(", ", (IEnumerable<string>)values)}");
+        }
+
+        sb.AppendLine("Body:");
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            sb.AppendLine(JsonSerializer.Serialize(doc, new JsonSerializerOptions { WriteIndented = true }));
+        }
+        catch
+        {
+            sb.AppendLine(body);
+        }
+        sb.AppendLine();
+
+        await _lock.WaitAsync();
+        try
+        {
+            await File.AppendAllTextAsync(_path, sb.ToString());
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
+    public void Dispose() => _lock.Dispose();
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -719,7 +834,22 @@ class Program
 
         var registry = new ProcessRegistry();
         var initialSnapshot = BuildSnapshot(config, registry);
-        var router = new Router(initialSnapshot);
+
+        // --- Parse --log [file] from command line ----------------------------
+        RequestLogger? requestLogger = null;
+        var logIdx = Array.IndexOf(args, "--log");
+        if (logIdx >= 0)
+        {
+            string logPath;
+            if (logIdx + 1 < args.Length && !args[logIdx + 1].StartsWith('-'))
+                logPath = args[logIdx + 1];
+            else
+                logPath = Path.Combine(
+                    AppContext.BaseDirectory, "requests.log");
+            requestLogger = new RequestLogger(logPath);
+        }
+
+        var router = new Router(initialSnapshot, requestLogger);
 
         Console.WriteLine($"AiRouter starting on {listenUrl}");
         Router.PrintRules(initialSnapshot);
@@ -766,7 +896,11 @@ class Program
         app.MapPost("/v1/messages", async (HttpContext ctx) =>
             await router.HandleMessagesAsync(ctx));
 
-        app.Lifetime.ApplicationStopping.Register(() => router.Dispose());
+        app.Lifetime.ApplicationStopping.Register(() =>
+        {
+            router.Dispose();
+            requestLogger?.Dispose();
+        });
 
         // --- Background keyboard listener ------------------------------------
         Console.WriteLine("[keys] Ctrl+K = kill managed processes  |  Ctrl+U = kill processes + shut down router");
