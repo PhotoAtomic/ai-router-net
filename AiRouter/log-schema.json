@@ -1,0 +1,91 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://airouter/log-entry.schema.json",
+  "title": "AiRouter Log Entry",
+  "description": "Schema for a single line in the AiRouter JSONL request/response log (requests.jsonl). Each line is one JSON object conforming to this schema.",
+  "type": "object",
+  "required": [
+    "requestTimestamp",
+    "responseTimestamp",
+    "durationMs",
+    "model",
+    "matchedRule",
+    "targetUrl",
+    "statusCode",
+    "requestSizeBytes",
+    "responseSizeBytes",
+    "requestHeaders",
+    "responseHeaders",
+    "requestBody",
+    "responseBody"
+  ],
+  "properties": {
+    "requestTimestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp (with timezone offset) of when the request arrived at the router."
+    },
+    "responseTimestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp (with timezone offset) of when the last byte of the response was received from the upstream server."
+    },
+    "durationMs": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Elapsed time in milliseconds between request arrival and last response byte (responseTimestamp − requestTimestamp)."
+    },
+    "model": {
+      "type": "string",
+      "description": "The model name extracted from the request body."
+    },
+    "matchedRule": {
+      "type": "string",
+      "description": "The regex pattern of the routing rule that matched this request."
+    },
+    "targetUrl": {
+      "type": "string",
+      "format": "uri",
+      "description": "Full URL the request was forwarded to (baseUrl + /v1/messages)."
+    },
+    "statusCode": {
+      "type": "integer",
+      "minimum": 100,
+      "maximum": 599,
+      "description": "HTTP status code returned by the upstream server."
+    },
+    "requestSizeBytes": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Size of the request body in bytes (UTF-8 encoded)."
+    },
+    "responseSizeBytes": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Size of the response body in bytes (UTF-8 encoded). For SSE streams this is the total accumulated size."
+    },
+    "requestHeaders": {
+      "type": "object",
+      "description": "All HTTP request headers. Authorization and x-api-key values are replaced with \"[redacted]\".",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "responseHeaders": {
+      "type": "object",
+      "description": "All HTTP response headers returned by the upstream server (message headers + content headers).",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "requestBody": {
+      "type": "string",
+      "description": "Full text of the request body sent to the upstream (after any model substitution)."
+    },
+    "responseBody": {
+      "type": "string",
+      "description": "Full text of the response body received from the upstream. For SSE responses this contains the concatenated raw event stream."
+    }
+  },
+  "additionalProperties": false
+}
