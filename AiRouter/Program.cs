@@ -1,5 +1,6 @@
 using System.Runtime.Versioning;
 using System.Text.RegularExpressions;
+using AiRouter.Dashboard;
 using AiRouter.Logging;
 using AiRouter.Process;
 using AiRouter.Routing;
@@ -19,7 +20,7 @@ class Program
             .AddEnvironmentVariables()
             .Build();
 
-        var host = config["Host"] ?? "http://0.0.0.0";
+        var host = config["Host"] ?? "http://127.0.0.1";
         var port = config["Port"] ?? "5000";
         var listenUrl = $"{host}:{port}";
 
@@ -27,7 +28,8 @@ class Program
         var initialSnapshot = BuildSnapshot(config, registry);
 
         // --- Parse --log [file] from command line ----------------------------
-        RequestLogger? requestLogger = null;
+        RequestLogger?    requestLogger    = null;
+        LogWatcherService? logWatcher      = null;
         var logIdx = Array.IndexOf(args, "--log");
         if (logIdx >= 0)
         {
@@ -38,6 +40,7 @@ class Program
                 logPath = Path.Combine(
                     AppContext.BaseDirectory, "requests.jsonl");
             requestLogger = new RequestLogger(logPath);
+            logWatcher    = new LogWatcherService(logPath);
         }
 
         var router = new Router(initialSnapshot, requestLogger);
@@ -81,16 +84,43 @@ class Program
         // Disable request body size limit so large prompts are not rejected
         builder.WebHost.ConfigureKestrel(k => k.Limits.MaxRequestBodySize = null);
 
+        // Blazor Server (dashboard) — only when logging is enabled
+        if (logWatcher is not null)
+        {
+            builder.Services.AddRazorComponents()
+                .AddInteractiveServerComponents();
+            builder.Services.AddAntiforgery();
+            builder.Services.AddSingleton(logWatcher);
+        }
+
         var app = builder.Build();
+
+        // --- Middleware (must come before endpoint routing) ------------------
+        if (logWatcher is not null)
+        {
+            app.UseStaticFiles();
+            app.UseRouting();
+            app.UseAntiforgery();
+        }
 
         // --- Routes ----------------------------------------------------------
         app.MapPost("/v1/messages", async (HttpContext ctx) =>
             await router.HandleMessagesAsync(ctx));
 
+        // Dashboard (Blazor Server) — only when --log is active
+        if (logWatcher is not null)
+        {
+            app.MapGet("/", () => Results.Redirect("/dashboard"));
+            app.MapRazorComponents<AiRouter.Dashboard.Components.App>()
+               .AddInteractiveServerRenderMode();
+            Console.WriteLine($"[dashboard] Live dashboard available at {listenUrl}/dashboard");
+        }
+
         app.Lifetime.ApplicationStopping.Register(() =>
         {
             router.Dispose();
             requestLogger?.Dispose();
+            logWatcher?.Dispose();
         });
 
         // --- Background keyboard listener ------------------------------------

@@ -2,6 +2,7 @@
   "profiles": {
     "AiRouter": {
       "commandName": "Project",
+      "commandLineArgs": "--log \"D:\\AiRouter\\requests.log\"",
       "launchBrowser": true,
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development"

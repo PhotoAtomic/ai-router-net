@@ -1,7 +1,7 @@
 namespace AiRouter.Logging;
 
 // One record per proxied request/response pair (serialised as JSONL)
-record LogEntry(
+public record LogEntry(
     DateTimeOffset RequestTimestamp,
     DateTimeOffset ResponseTimestamp,
     double DurationMs,

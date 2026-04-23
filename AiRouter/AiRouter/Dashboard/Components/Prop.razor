@@ -1,0 +1,11 @@
+@namespace AiRouter.Dashboard.Components
+<div style="display:flex; flex-direction:column; gap:.1rem;">
+    <span style="font-size:.7rem; color:#718096; text-transform:uppercase; letter-spacing:.04em;">@Label</span>
+    <span style="@(Mono ? "font-family:monospace; font-size:.8rem;" : "font-size:.85rem;") color:#e2e8f0; word-break:break-all;">@(string.IsNullOrEmpty(Value) ? "—" : Value)</span>
+</div>
+
+@code {
+    [Parameter] public string Label { get; set; } = string.Empty;
+    [Parameter] public string Value { get; set; } = string.Empty;
+    [Parameter] public bool   Mono  { get; set; }
+}

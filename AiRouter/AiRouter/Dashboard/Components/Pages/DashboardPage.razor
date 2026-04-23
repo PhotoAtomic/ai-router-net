@@ -1,0 +1,182 @@
+@namespace AiRouter.Dashboard.Components.Pages
+@page "/dashboard"
+@implements IDisposable
+@inject LogWatcherService Watcher
+
+<h2 style="margin:0 0 1rem; font-size:1.25rem; color:#90cdf4;">Live Request Log</h2>
+
+<!-- ── Filters ─────────────────────────────────────────────────── -->
+<div style="display:flex; flex-wrap:wrap; gap:.75rem; margin-bottom:1rem;">
+    <input placeholder="Search…" value="@_search"
+           @oninput="e => { _search = e.Value?.ToString() ?? string.Empty; }"
+           style="@InputStyle" />
+    <input placeholder="Filter model…" value="@_filterModel"
+           @oninput="e => { _filterModel = e.Value?.ToString() ?? string.Empty; }"
+           style="@InputStyle" />
+    <input placeholder="Filter rule…" value="@_filterRule"
+           @oninput="e => { _filterRule = e.Value?.ToString() ?? string.Empty; }"
+           style="@InputStyle" />
+    <input placeholder="Filter endpoint…" value="@_filterEndpoint"
+           @oninput="e => { _filterEndpoint = e.Value?.ToString() ?? string.Empty; }"
+           style="@InputStyle" />
+    <button @onclick="ClearFilters" style="@ButtonStyle">Clear</button>
+</div>
+
+<!-- ── Table ───────────────────────────────────────────────────── -->
+@{
+    var rows = Filtered;
+    double maxDur  = Watcher.MaxDurationMs;
+    long   maxReq  = Watcher.MaxRequestBytes;
+    long   maxResp = Watcher.MaxResponseBytes;
+}
+
+@if (!rows.Any())
+{
+    <p style="color:#718096;">No log entries yet.</p>
+}
+else
+{
+    <div style="overflow-x:auto;">
+        <table style="@TableStyle">
+            <thead>
+                <tr style="background:#1a202c; position:sticky; top:0; z-index:1;">
+                    <th style="@Th">Time</th>
+                    <th style="@Th">Model requested</th>
+                    <th style="@Th">Forced model</th>
+                    <th style="@Th">Rule</th>
+                    <th style="@Th">Endpoint</th>
+                    <th style="@Th">Status</th>
+                    <th style="@Th">Duration</th>
+                    <th style="@Th">Req size</th>
+                    <th style="@Th">Resp size</th>
+                    <th style="@Th">Request preview</th>
+                    <th style="@Th">Response preview</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var vm in rows)
+                {
+                    <tr style="@RowStyle" @onclick="() => GoDetail(vm)" title="Click for details">
+                        <td style="@Td">@vm.RequestTimestamp.LocalDateTime.ToString("HH:mm:ss")</td>
+                        <td style="@Td; font-family:monospace;">@vm.Model</td>
+                        <td style="@Td; font-family:monospace;">@vm.ForcedModel</td>
+                        <td style="@Td">@vm.MatchedRule</td>
+                        <td style="@Td; max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="@vm.TargetUrl">@vm.TargetUrl</td>
+                        <td style="@Td; color:@StatusColor(vm.StatusCode);">@vm.StatusCode</td>
+                        <td style="@Td; color:@HeatColor(vm.DurationMs, maxDur);">@($"{vm.DurationMs:F0} ms")</td>
+                        <td style="@Td; color:@HeatColor(vm.RequestBytes, maxReq);">@FormatBytes(vm.RequestBytes)</td>
+                        <td style="@Td; color:@HeatColor(vm.ResponseBytes, maxResp);">@FormatBytes(vm.ResponseBytes)</td>
+                        <td style="@Td; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#a0aec0;" title="@vm.RequestPreview">@vm.RequestPreview</td>
+                        <td style="@Td; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#a0aec0;" title="@vm.ResponsePreview">@vm.ResponsePreview</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+    <p style="color:#718096; font-size:.8rem; margin-top:.5rem;">@rows.Count() entries shown of @Watcher.Entries.Count total</p>
+}
+
+@code {
+    [Inject] NavigationManager Nav { get; set; } = default!;
+
+    string _search        = string.Empty;
+    string _filterModel   = string.Empty;
+    string _filterRule    = string.Empty;
+    string _filterEndpoint= string.Empty;
+
+    protected override void OnInitialized()
+        => Watcher.Changed += OnChanged;
+
+    void OnChanged()
+        => InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+        => Watcher.Changed -= OnChanged;
+
+    void ClearFilters()
+    {
+        _search         = string.Empty;
+        _filterModel    = string.Empty;
+        _filterRule     = string.Empty;
+        _filterEndpoint = string.Empty;
+    }
+
+    IEnumerable<LogEntryViewModel> Filtered
+    {
+        get
+        {
+            var q = Watcher.Entries.AsEnumerable();
+            if (!string.IsNullOrWhiteSpace(_filterModel))
+                q = q.Where(e => e.Model.Contains(_filterModel, StringComparison.OrdinalIgnoreCase)
+                               || e.ForcedModel.Contains(_filterModel, StringComparison.OrdinalIgnoreCase));
+            if (!string.IsNullOrWhiteSpace(_filterRule))
+                q = q.Where(e => e.MatchedRule.Contains(_filterRule, StringComparison.OrdinalIgnoreCase));
+            if (!string.IsNullOrWhiteSpace(_filterEndpoint))
+                q = q.Where(e => e.TargetUrl.Contains(_filterEndpoint, StringComparison.OrdinalIgnoreCase));
+            if (!string.IsNullOrWhiteSpace(_search))
+                q = q.Where(e =>
+                    e.Model.Contains(_search, StringComparison.OrdinalIgnoreCase) ||
+                    e.ForcedModel.Contains(_search, StringComparison.OrdinalIgnoreCase) ||
+                    e.MatchedRule.Contains(_search, StringComparison.OrdinalIgnoreCase) ||
+                    e.TargetUrl.Contains(_search, StringComparison.OrdinalIgnoreCase) ||
+                    e.RequestPreview.Contains(_search, StringComparison.OrdinalIgnoreCase) ||
+                    e.ResponsePreview.Contains(_search, StringComparison.OrdinalIgnoreCase));
+            return q;
+        }
+    }
+
+    void GoDetail(LogEntryViewModel vm)
+    {
+        var idx = Watcher.Entries.IndexOf(vm);
+        Nav.NavigateTo($"/dashboard/detail/{idx}");
+    }
+
+    // ── colour helpers ──────────────────────────────────────────
+
+    static string HeatColor(double value, double max)
+    {
+        if (max <= 0) return "#68d391"; // pure green
+        var ratio = Math.Clamp(value / max, 0, 1);
+        // green #68d391 → yellow #f6e05e → red #fc8181
+        if (ratio < 0.5)
+        {
+            var t = ratio * 2;
+            return Lerp("#68d391", "#f6e05e", t);
+        }
+        else
+        {
+            var t = (ratio - 0.5) * 2;
+            return Lerp("#f6e05e", "#fc8181", t);
+        }
+    }
+
+    static string StatusColor(int code) => code < 300 ? "#68d391" : code < 500 ? "#f6e05e" : "#fc8181";
+
+    static string Lerp(string hex1, string hex2, double t)
+    {
+        static (int r, int g, int b) Parse(string h) =>
+            (Convert.ToInt32(h[1..3], 16), Convert.ToInt32(h[3..5], 16), Convert.ToInt32(h[5..7], 16));
+        var (r1,g1,b1) = Parse(hex1);
+        var (r2,g2,b2) = Parse(hex2);
+        int r = (int)(r1 + (r2-r1)*t);
+        int g = (int)(g1 + (g2-g1)*t);
+        int b = (int)(b1 + (b2-b1)*t);
+        return $"#{r:X2}{g:X2}{b:X2}";
+    }
+
+    static string FormatBytes(long bytes) => bytes switch
+    {
+        < 1024        => $"{bytes} B",
+        < 1024 * 1024 => $"{bytes/1024.0:F1} KB",
+        _             => $"{bytes/1024.0/1024:F2} MB",
+    };
+
+    // ── inline styles ───────────────────────────────────────────
+
+    const string TableStyle    = "width:100%; border-collapse:collapse; font-size:.8rem;";
+    const string Th            = "padding:.5rem .75rem; text-align:left; border-bottom:1px solid #2d3748; white-space:nowrap; color:#90cdf4; font-weight:500;";
+    const string Td            = "padding:.45rem .75rem; border-bottom:1px solid #1a202c; vertical-align:top;";
+    const string RowStyle      = "cursor:pointer; transition:background .15s;";
+    const string InputStyle    = "background:#1a202c; border:1px solid #2d3748; color:#e2e8f0; border-radius:6px; padding:.4rem .75rem; font-size:.85rem; min-width:140px;";
+    const string ButtonStyle   = "background:#2d3748; border:1px solid #4a5568; color:#e2e8f0; border-radius:6px; padding:.4rem .9rem; cursor:pointer; font-size:.85rem;";
+}

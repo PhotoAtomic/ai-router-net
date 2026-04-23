@@ -1,0 +1,14 @@
+@namespace AiRouter.Dashboard.Components
+@inherits LayoutComponentBase
+
+<div style="min-height:100vh; display:flex; flex-direction:column;">
+    <header style="background:#1a202c; border-bottom:1px solid #2d3748; padding:0.75rem 1.5rem; display:flex; align-items:center; gap:1rem;">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#63b3ed" stroke-width="2">
+            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+        </svg>
+        <a href="/dashboard" style="font-size:1.1rem; font-weight:600; color:#e2e8f0;">AiRouter Dashboard</a>
+    </header>
+    <main style="flex:1; padding:1.5rem;">
+        @Body
+    </main>
+</div>

@@ -1,4 +1,4 @@
-using System.Text.Json;
+using AiRouter.Serialization;
 
 namespace AiRouter.Logging;
 
@@ -8,12 +8,6 @@ class RequestLogger : IDisposable
     private readonly string _path;
     private readonly SemaphoreSlim _lock = new(1, 1);
 
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        WriteIndented = false,
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-    };
-
     public RequestLogger(string path)
     {
         _path = path;
@@ -22,7 +16,7 @@ class RequestLogger : IDisposable
 
     public async Task LogAsync(LogEntry entry)
     {
-        var line = JsonSerializer.Serialize(entry, JsonOptions) + Environment.NewLine;
+        var line = System.Text.Json.JsonSerializer.Serialize(entry, AiRouterJsonContext.Default.LogEntry) + Environment.NewLine;
 
         await _lock.WaitAsync();
         try

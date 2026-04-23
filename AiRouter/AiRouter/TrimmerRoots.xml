@@ -6,7 +6,7 @@
 <linker>
   <assembly fullname="AiRouter">
 	<!-- Routing config types bound by IConfiguration.Get<T>() -->
-	<type fullname="AiRouter.RoutingRule"   preserve="all" />
-	<type fullname="AiRouter.ProcessConfig" preserve="all" />
+	<type fullname="AiRouter.RoutingRuleConfig"        preserve="all" />
+	<type fullname="AiRouter.Process.ProcessConfig"    preserve="all" />
   </assembly>
 </linker>
