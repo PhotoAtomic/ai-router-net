@@ -77,6 +77,7 @@ else
                     <th style="@Th">Resp size</th>
                     <th style="@Th">Request preview</th>
                     <th style="@Th">Response preview</th>
+                    <th style="@Th" title="Tool use">🔨</th>
                     <th style="@Th">Timeline</th>
                 </tr>
             </thead>
@@ -84,7 +85,10 @@ else
                 @foreach (var vm in rows)
                 {
                     bool isSelected = _selected.Contains(vm.CorrelationId);
-                    string rowBg = isSelected ? "background:#2d3748;" : string.Empty;
+                    bool isLastViewed = Watcher.LastViewedId.HasValue && Watcher.LastViewedId.Value == vm.CorrelationId;
+                    string rowBg = isSelected ? "background:#2d3748;"
+                                 : isLastViewed ? "background:#2a3f2a;"
+                                 : string.Empty;
 
                     double barStartPct = (vm.RequestTimestamp.UtcTicks - timelineOriginTicks) / TimeSpan.TicksPerMillisecond / timelineSpanMs * 100.0;
                     double barWidthPct = vm.HasResponse ? vm.DurationMs / timelineSpanMs * 100.0 : 0.5;
@@ -113,6 +117,7 @@ else
                             <td style="@Td; color:@HeatColor(vm.ResponseBytes, maxResp); cursor:pointer;" @onclick="() => GoDetail(vm)">@FormatBytes(vm.ResponseBytes)</td>
                             <td style="@Td; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#a0aec0; cursor:pointer;" title="@vm.RequestPreview" @onclick="() => GoDetail(vm)">@vm.RequestPreview</td>
                             <td style="@Td; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#a0aec0; cursor:pointer;" title="@vm.ResponsePreview" @onclick="() => GoDetail(vm)">@vm.ResponsePreview</td>
+                            <td style="@Td; text-align:center; cursor:pointer;" @onclick="() => GoDetail(vm)" title="@(vm.HasToolUse ? "Tool use" : string.Empty)">@(vm.HasToolUse ? "🔨" : string.Empty)</td>
                         }
                         else
                         {
@@ -122,6 +127,7 @@ else
                             <td style="@Td; color:#718096; cursor:pointer;" @onclick="() => GoDetail(vm)">—</td>
                             <td style="@Td; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#a0aec0; cursor:pointer;" title="@vm.RequestPreview" @onclick="() => GoDetail(vm)">@vm.RequestPreview</td>
                             <td style="@Td; color:#718096; cursor:pointer;" @onclick="() => GoDetail(vm)">—</td>
+                            <td style="@Td;" @onclick="() => GoDetail(vm)"></td>
                         }
                         <td style="@Td; min-width:120px; padding-top:.55rem; padding-bottom:.55rem; cursor:pointer;" @onclick="() => GoDetail(vm)">
                             <div style="position:relative; height:10px; background:#2d3748; border-radius:3px; overflow:hidden;"
@@ -225,7 +231,10 @@ else
     }
 
     void GoDetail(LogEntryViewModel vm)
-        => Nav.NavigateTo($"/dashboard/detail/{vm.CorrelationId:N}");
+    {
+        Watcher.LastViewedId = vm.CorrelationId;
+        Nav.NavigateTo($"/dashboard/detail/{vm.CorrelationId:N}");
+    }
 
     // ── colour helpers ──────────────────────────────────────────
 

@@ -23,6 +23,9 @@ public sealed class LogWatcherService : IDisposable
     /// <summary>Raised on the ThreadPool whenever entries change.</summary>
     public event Action? Changed;
 
+    /// <summary>CorrelationId of the last entry opened in the detail view. Used to highlight it on back-navigation.</summary>
+    public Guid? LastViewedId { get; set; }
+
     // -------------------------------------------------------------------------
     // Private fields
     // -------------------------------------------------------------------------

@@ -46,6 +46,9 @@ public sealed class LogEntryViewModel
     public string                    ResponseBody      { get; private set; } = string.Empty;
     public string                    ResponsePreview   { get; private set; } = string.Empty;
 
+    /// <summary>True when the response contains at least one tool_use block.</summary>
+    public bool                      HasToolUse        { get; private set; }
+
     // -------------------------------------------------------------------------
 
     public static LogEntryViewModel FromRequest(LogEntry e)
@@ -86,6 +89,7 @@ public sealed class LogEntryViewModel
         ResponseHeaders   = e.ResponseHeaders;
         ResponseBody      = e.ResponseBody ?? string.Empty;
         ResponsePreview   = ExtractResponsePreview(ResponseBody);
+        HasToolUse        = DetectToolUse(ResponseBody);
     }
 
     // -------------------------------------------------------------------------
@@ -132,6 +136,29 @@ public sealed class LogEntryViewModel
             return ExtractContent(last);
         }
         catch { return string.Empty; }
+    }
+
+    private static bool DetectToolUse(string body)
+    {
+        try
+        {
+            var entries = LoggedResponseParser.ParseEnvelope(body);
+            if (entries.Count > 0)
+            {
+                var rec = LoggedResponseParser.Reconstruct(entries);
+                return rec.ToolUses.Count > 0;
+            }
+            using var doc = JsonDocument.Parse(body);
+            if (doc.RootElement.TryGetProperty("content", out var content)
+                && content.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var block in content.EnumerateArray())
+                    if (block.TryGetProperty("type", out var t) && t.GetString() == "tool_use")
+                        return true;
+            }
+        }
+        catch { }
+        return false;
     }
 
     private static string ExtractResponsePreview(string body)
