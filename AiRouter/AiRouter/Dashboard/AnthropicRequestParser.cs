@@ -11,6 +11,7 @@ public sealed class AnthropicRequest
     public List<AnthropicSystemBlock>? System  { get; set; }
     public List<AnthropicMessage>?     Messages { get; set; }
     public List<AnthropicTool>?        Tools    { get; set; }
+    public JsonElement                 Metadata { get; set; }  // raw — we parse it ourselves
     // any extra keys are ignored
 }
 
@@ -37,6 +38,20 @@ public sealed class AnthropicTool
 {
     public string? Name        { get; set; }
     public string? Description { get; set; }
+}
+
+/// <summary>
+/// Parsed content of the <c>metadata.user_id</c> field.
+/// Claude Code sends a JSON string in that field with device_id / account_uuid / session_id.
+/// </summary>
+public sealed class RequestMetadata
+{
+    public string? DeviceId    { get; set; }
+    public string? AccountUuid { get; set; }
+    public string? SessionId   { get; set; }
+
+    /// <summary>Raw text of the user_id field before any JSON parsing attempt.</summary>
+    public string? RawUserId   { get; set; }
 }
 
 public static class AnthropicRequestParser
@@ -78,5 +93,42 @@ public static class AnthropicRequestParser
             return parts.ToString();
         }
         return string.Empty;
+    }
+
+    /// <summary>
+    /// Extracts the structured metadata from an <see cref="AnthropicRequest"/>.
+    /// The <c>metadata.user_id</c> field is a JSON-encoded string, so we decode it twice.
+    /// </summary>
+    public static RequestMetadata? ParseMetadata(AnthropicRequest req)
+    {
+        var meta = req.Metadata;
+        if (meta.ValueKind == JsonValueKind.Undefined || meta.ValueKind == JsonValueKind.Null)
+            return null;
+
+        // user_id is a JSON string whose *value* is itself a JSON object
+        if (!meta.TryGetProperty("user_id", out var userIdEl)) return null;
+        var rawUserId = userIdEl.ValueKind == JsonValueKind.String
+            ? userIdEl.GetString()
+            : userIdEl.GetRawText();
+
+        if (string.IsNullOrWhiteSpace(rawUserId))
+            return new RequestMetadata { RawUserId = rawUserId };
+
+        try
+        {
+            using var inner = JsonDocument.Parse(rawUserId);
+            var root = inner.RootElement;
+            return new RequestMetadata
+            {
+                RawUserId   = rawUserId,
+                DeviceId    = root.TryGetProperty("device_id",    out var d) ? d.GetString() : null,
+                AccountUuid = root.TryGetProperty("account_uuid", out var a) ? a.GetString() : null,
+                SessionId   = root.TryGetProperty("session_id",   out var s) ? s.GetString() : null,
+            };
+        }
+        catch
+        {
+            return new RequestMetadata { RawUserId = rawUserId };
+        }
     }
 }

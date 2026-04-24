@@ -24,6 +24,18 @@ public sealed class LogEntryViewModel
     public string                    RequestBody      { get; private set; } = string.Empty;
     public string                    RequestPreview   { get; private set; } = string.Empty;
 
+    /// <summary>Parsed metadata from the request body (device_id / session_id / …).</summary>
+    public RequestMetadata?          Metadata         { get; private set; }
+
+    /// <summary>
+    /// The identity key used to assign a session color.
+    /// Prefers session_id, falls back to device_id, then raw user_id.
+    /// </summary>
+    public string                    SessionIdentity  { get; private set; } = string.Empty;
+
+    /// <summary>Neon hex color derived from <see cref="SessionIdentity"/>.</summary>
+    public string                    SessionColor     { get; private set; } = "#4a5568";
+
     // --- response half (populated when the Response entry arrives) ---
     public bool                      HasResponse       { get; private set; }
     public DateTimeOffset?           ResponseTimestamp { get; private set; }
@@ -54,6 +66,14 @@ public sealed class LogEntryViewModel
         RequestHeaders   = e.RequestHeaders;
         RequestBody      = e.RequestBody ?? string.Empty;
         RequestPreview   = ExtractLastMessagePreview(RequestBody);
+
+        var req = AnthropicRequestParser.TryParse(RequestBody);
+        Metadata        = req is not null ? AnthropicRequestParser.ParseMetadata(req) : null;
+        SessionIdentity = Metadata?.SessionId
+                       ?? Metadata?.DeviceId
+                       ?? Metadata?.RawUserId
+                       ?? string.Empty;
+        SessionColor    = SessionColorHelper.ColorFor(SessionIdentity);
     }
 
     public void ApplyResponse(LogEntry e)
@@ -118,6 +138,23 @@ public sealed class LogEntryViewModel
     {
         try
         {
+            // New wrapped envelope: { "responses": [...] } — reconstruct text from it.
+            var entries = LoggedResponseParser.ParseEnvelope(body);
+            if (entries.Count > 0)
+            {
+                var rec = LoggedResponseParser.Reconstruct(entries);
+                if (!string.IsNullOrEmpty(rec.Text))
+                    return Truncate(rec.Text);
+                if (rec.ToolUses.Count > 0)
+                {
+                    var names = string.Join(", ", rec.ToolUses.ConvertAll(t => t.Name ?? "?"));
+                    return Truncate($"[tool_use: {names}]");
+                }
+                if (!string.IsNullOrEmpty(rec.Thinking))
+                    return Truncate(rec.Thinking);
+            }
+
+            // Fallback: legacy / unknown shape.
             using var doc = JsonDocument.Parse(body);
             if (doc.RootElement.TryGetProperty("content", out var content)
                 && content.ValueKind == JsonValueKind.Array)

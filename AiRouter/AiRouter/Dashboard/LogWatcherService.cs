@@ -143,6 +143,108 @@ public sealed class LogWatcherService : IDisposable
     }
 
     // -------------------------------------------------------------------------
+    // Mutation helpers (called from the UI)
+    // -------------------------------------------------------------------------
+
+    /// <summary>Deletes all entries from memory and truncates the log file.</summary>
+    public void ClearAll()
+    {
+        lock (_lock)
+        {
+            _entries.Clear();
+            _byCorrelation.Clear();
+            MaxDurationMs    = 0;
+            MaxRequestBytes  = 0;
+            MaxResponseBytes = 0;
+        }
+
+        try
+        {
+            _watcher.EnableRaisingEvents = false;
+            File.WriteAllText(_path, string.Empty);
+            _readPosition = 0;
+        }
+        catch { /* best-effort */ }
+        finally
+        {
+            _watcher.EnableRaisingEvents = true;
+        }
+
+        Changed?.Invoke();
+    }
+
+    /// <summary>
+    /// Removes the specified correlation IDs from memory and rewrites the log file
+    /// without those entries.
+    /// </summary>
+    public void RemoveEntries(IEnumerable<Guid> ids)
+    {
+        var set = new HashSet<Guid>(ids);
+        if (set.Count == 0) return;
+
+        lock (_lock)
+        {
+            foreach (var id in set)
+            {
+                _byCorrelation.Remove(id);
+            }
+            _entries.RemoveAll(e => set.Contains(e.CorrelationId));
+            RecalcMaxima();
+        }
+
+        RewriteFile(set);
+        Changed?.Invoke();
+    }
+
+    private void RecalcMaxima()
+    {
+        MaxDurationMs    = 0;
+        MaxRequestBytes  = 0;
+        MaxResponseBytes = 0;
+        foreach (var vm in _entries)
+        {
+            if (vm.DurationMs    > MaxDurationMs)    MaxDurationMs    = vm.DurationMs;
+            if (vm.RequestBytes  > MaxRequestBytes)  MaxRequestBytes  = vm.RequestBytes;
+            if (vm.ResponseBytes > MaxResponseBytes) MaxResponseBytes = vm.ResponseBytes;
+        }
+    }
+
+    private void RewriteFile(HashSet<Guid> removedIds)
+    {
+        try
+        {
+            _watcher.EnableRaisingEvents = false;
+
+            // Read current file lines, drop those whose correlationId is in removedIds.
+            var kept = new List<string>();
+            if (File.Exists(_path))
+            {
+                foreach (var line in File.ReadLines(_path))
+                {
+                    if (string.IsNullOrWhiteSpace(line)) continue;
+                    try
+                    {
+                        var entry = System.Text.Json.JsonSerializer.Deserialize(
+                            line, AiRouterJsonContext.Default.LogEntry);
+                        if (entry is not null && removedIds.Contains(entry.CorrelationId))
+                            continue; // drop it
+                    }
+                    catch { /* keep malformed lines */ }
+                    kept.Add(line);
+                }
+            }
+
+            File.WriteAllLines(_path, kept);
+            _readPosition = new FileInfo(_path).Length;
+        }
+        catch { /* best-effort */ }
+        finally
+        {
+            _watcher.EnableRaisingEvents = true;
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // IDisposable
     // -------------------------------------------------------------------------
 

@@ -76,7 +76,7 @@
     },
     "responseBody": {
       "type": "string",
-      "description": "[response only] Full text of the response body received from the upstream. For SSE responses this is the post-processed concatenated content."
+      "description": "[response only] Stringified JSON envelope wrapping the upstream payload(s) so no detail is lost. Shape: { \"responses\": [ ... ] }. Each entry is either { \"kind\": \"event\", \"event\": \"<name>\", \"data\": <parsed-json-or-string> } for SSE events (one entry per event, in order) or { \"kind\": \"response\", \"contentType\": \"<mime>\", \"body\": <parsed-json-or-string> } for a single non-streamed response. The dashboard is responsible for replaying SSE entries to reconstruct the full assistant message and any tool_use requests."
     }
   },
   "additionalProperties": false

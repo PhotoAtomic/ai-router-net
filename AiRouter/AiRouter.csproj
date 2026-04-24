@@ -26,6 +26,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Folder Include="AiRouter\AiRouter\Logging\" />
   </ItemGroup>
 
   <ItemGroup>

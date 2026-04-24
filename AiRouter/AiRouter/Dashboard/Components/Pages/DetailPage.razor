@@ -45,6 +45,140 @@ else
             </div>
         </div>
 
+        @{
+            var anthropic = AnthropicRequestParser.TryParse(vm.RequestBody);
+        }
+
+        <!-- ── Session metadata ──────────────────────────────── -->
+        @if (vm.Metadata is { } meta)
+        {
+            <div style="@Card; border-left:4px solid @vm.SessionColor;">
+                <h3 style="@CardTitle">Session metadata</h3>
+                <div style="@Grid">
+                    @if (!string.IsNullOrEmpty(meta.SessionId))
+                    { <Prop Label="Session ID"   Value="@meta.SessionId"   Mono="true" /> }
+                    @if (!string.IsNullOrEmpty(meta.DeviceId))
+                    { <Prop Label="Device ID"    Value="@meta.DeviceId"    Mono="true" /> }
+                    @if (!string.IsNullOrEmpty(meta.AccountUuid))
+                    { <Prop Label="Account UUID" Value="@meta.AccountUuid" Mono="true" /> }
+                </div>
+                @if (string.IsNullOrEmpty(meta.SessionId) && string.IsNullOrEmpty(meta.DeviceId)
+                     && string.IsNullOrEmpty(meta.AccountUuid)
+                     && !string.IsNullOrEmpty(meta.RawUserId))
+                {
+                    <pre style="@PreStyle; max-height:120px;">@meta.RawUserId</pre>
+                }
+            </div>
+        }
+
+        <!-- ── Request messages ──────────────────────────────── -->
+        @if (anthropic?.Messages is { Count: > 0 })
+        {
+            <div style="@Card">
+                <h3 style="@CardTitle">Messages (@anthropic.Messages.Count)</h3>
+                @foreach (var msg in anthropic.Messages)
+                {
+                    var roleColor = msg.Role == "assistant" ? "#90cdf4" : "#68d391";
+                    <div style="margin-bottom:.5rem; border-left:3px solid @roleColor; padding-left:.6rem;">
+                        <div style="font-size:.75rem; color:@roleColor; margin-bottom:.2rem;">@msg.Role</div>
+                        <pre style="@PreStyle; margin:0;">@DecodeText(AnthropicRequestParser.GetMessageText(msg))</pre>
+                    </div>
+                }
+            </div>
+        }
+
+        <!-- ── Response body ─────────────────────────────────── -->
+        <div style="@Card">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:.75rem;">
+                <h3 style="margin:0; font-size:1rem; color:#90cdf4;">Response body</h3>
+                <span style="font-size:.75rem; color:#718096;">@(vm.HasResponse ? FormatBytes(vm.ResponseBytes) : "—")</span>
+            </div>
+            @if (vm.HasResponse)
+            {
+                var entries = LoggedResponseParser.ParseEnvelope(vm.ResponseBody);
+                var reconstructed = entries.Count > 0
+                    ? LoggedResponseParser.Reconstruct(entries)
+                    : null;
+
+                @if (reconstructed is not null && entries.Count > 0)
+                {
+                    <!-- Reconstructed assistant reply -->
+                    <div style="margin-bottom:1rem; border-left:3px solid #90cdf4; padding-left:.75rem;">
+                        <div style="display:flex; gap:.75rem; flex-wrap:wrap; font-size:.7rem; color:#718096; margin-bottom:.4rem;">
+                            <span>events: <strong style="color:#e2e8f0;">@entries.Count</strong></span>
+                            @if (!string.IsNullOrEmpty(reconstructed.Model))
+                            { <span>model: <strong style="color:#e2e8f0;">@reconstructed.Model</strong></span> }
+                            @if (!string.IsNullOrEmpty(reconstructed.StopReason))
+                            { <span>stop: <strong style="color:#e2e8f0;">@reconstructed.StopReason</strong></span> }
+                            @if (reconstructed.InputTokens is not null)
+                            { <span>in: <strong style="color:#e2e8f0;">@reconstructed.InputTokens</strong></span> }
+                            @if (reconstructed.OutputTokens is not null)
+                            { <span>out: <strong style="color:#e2e8f0;">@reconstructed.OutputTokens</strong></span> }
+                            @if (reconstructed.CacheReadInputTokens is not null)
+                            { <span>cache-read: <strong style="color:#e2e8f0;">@reconstructed.CacheReadInputTokens</strong></span> }
+                        </div>
+
+                        @if (!string.IsNullOrEmpty(reconstructed.Thinking))
+                        {
+                            <div style="font-size:.75rem; color:#a78bfa; margin:.4rem 0 .15rem;">thinking</div>
+                            <pre style="@PreStyle; max-height:240px;">@reconstructed.Thinking</pre>
+                        }
+
+                        @if (!string.IsNullOrEmpty(reconstructed.Text))
+                        {
+                            <div style="font-size:.75rem; color:#90cdf4; margin:.4rem 0 .15rem;">text</div>
+                            <pre style="@PreStyle;">@reconstructed.Text</pre>
+                        }
+
+                        @if (reconstructed.ToolUses.Count > 0)
+                        {
+                            <div style="font-size:.75rem; color:#f6ad55; margin:.6rem 0 .25rem;">tool_use (@reconstructed.ToolUses.Count)</div>
+                            @foreach (var tu in reconstructed.ToolUses)
+                            {
+                                <div style="border:1px solid #2d3748; border-radius:6px; padding:.5rem .6rem; margin-bottom:.4rem; background:#171923;">
+                                    <div style="display:flex; gap:.6rem; align-items:baseline; margin-bottom:.3rem;">
+                                        <span style="font-family:monospace; color:#f6ad55; font-weight:600;">@(tu.Name ?? "?")</span>
+                                        @if (!string.IsNullOrEmpty(tu.Id))
+                                        { <span style="font-family:monospace; font-size:.7rem; color:#718096;">@tu.Id</span> }
+                                    </div>
+                                    <pre style="@PreStyle; max-height:280px; margin:0;">@tu.Input</pre>
+                                </div>
+                            }
+                        }
+                    </div>
+
+                    <!-- Raw events / response -->
+                    <details>
+                        <summary style="cursor:pointer; color:#a0aec0; font-size:.8rem; margin-bottom:.5rem;">
+                            Raw upstream payload (@entries.Count @(entries.Count == 1 ? "entry" : "entries"))
+                        </summary>
+                        @foreach (var (entry, idx) in entries.Select((e, i) => (e, i)))
+                        {
+                            <div style="margin-bottom:.5rem;">
+                                <div style="display:flex; gap:.5rem; align-items:baseline; font-size:.7rem; color:#718096; margin-bottom:.2rem;">
+                                    <span>#@idx</span>
+                                    <span style="color:#90cdf4; font-family:monospace;">@entry.Kind</span>
+                                    @if (!string.IsNullOrEmpty(entry.EventName))
+                                    { <span style="font-family:monospace; color:#f6ad55;">@entry.EventName</span> }
+                                    @if (!string.IsNullOrEmpty(entry.ContentType))
+                                    { <span style="font-family:monospace;">@entry.ContentType</span> }
+                                </div>
+                                <pre style="@PreStyle; max-height:200px;">@PrettyJson(entry.Raw)</pre>
+                            </div>
+                        }
+                    </details>
+                }
+                else
+                {
+                    <pre style="@PreStyle">@PrettyJson(vm.ResponseBody)</pre>
+                }
+            }
+            else
+            {
+                <p style="color:#718096; margin:0;">— waiting for response —</p>
+            }
+        </div>
+
         <!-- ── Request headers ───────────────────────────────── -->
         <div style="@Card">
             <h3 style="@CardTitle">Request headers</h3>
@@ -74,11 +208,8 @@ else
             }
         </div>
 
-        <!-- ── Anthropic request detail ──────────────────────── -->
-        @{
-            var anthropic = AnthropicRequestParser.TryParse(vm.RequestBody);
-        }
-        @if (anthropic is not null)
+        <!-- ── Anthropic request detail (system + tools) ────── -->
+        @if (anthropic is not null && (anthropic.System is { Count: > 0 } || anthropic.Tools is { Count: > 0 }))
         {
             <div style="@Card">
                 <h3 style="@CardTitle">Request (parsed)</h3>
@@ -110,19 +241,6 @@ else
                         }
                     </div>
                 }
-
-                @if (anthropic.Messages is { Count: > 0 })
-                {
-                    <div style="font-size:.75rem; color:#718096; margin-bottom:.4rem;">messages (@anthropic.Messages.Count)</div>
-                    @foreach (var msg in anthropic.Messages)
-                    {
-                        var roleColor = msg.Role == "assistant" ? "#90cdf4" : "#68d391";
-                        <div style="margin-bottom:.5rem; border-left:3px solid @roleColor; padding-left:.6rem;">
-                            <div style="font-size:.75rem; color:@roleColor; margin-bottom:.2rem;">@msg.Role</div>
-                            <pre style="@PreStyle; margin:0;">@DecodeText(AnthropicRequestParser.GetMessageText(msg))</pre>
-                        </div>
-                    }
-                }
             </div>
         }
 
@@ -133,22 +251,6 @@ else
                 <span style="font-size:.75rem; color:#718096;">@FormatBytes(vm.RequestBytes)</span>
             </div>
             <pre style="@PreStyle">@PrettyJson(vm.RequestBody)</pre>
-        </div>
-
-        <!-- ── Response body ─────────────────────────────────── -->
-        <div style="@Card">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:.75rem;">
-                <h3 style="margin:0; font-size:1rem; color:#90cdf4;">Response body</h3>
-                <span style="font-size:.75rem; color:#718096;">@(vm.HasResponse ? FormatBytes(vm.ResponseBytes) : "—")</span>
-            </div>
-            @if (vm.HasResponse)
-            {
-                <pre style="@PreStyle">@PrettyJson(vm.ResponseBody)</pre>
-            }
-            else
-            {
-                <p style="color:#718096; margin:0;">— waiting for response —</p>
-            }
         </div>
     </div>
 }

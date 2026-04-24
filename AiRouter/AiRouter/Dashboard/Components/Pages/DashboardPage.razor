@@ -7,7 +7,7 @@
 <h2 style="margin:0 0 1rem; font-size:1.25rem; color:#90cdf4;">Live Request Log</h2>
 
 <!-- ── Filters ─────────────────────────────────────────────────── -->
-<div style="display:flex; flex-wrap:wrap; gap:.75rem; margin-bottom:1rem;">
+<div style="display:flex; flex-wrap:wrap; gap:.75rem; margin-bottom:1rem; align-items:center;">
     <input placeholder="Search…" value="@_search"
            @oninput="e => { _search = e.Value?.ToString() ?? string.Empty; }"
            style="@InputStyle" />
@@ -20,7 +20,21 @@
     <input placeholder="Filter endpoint…" value="@_filterEndpoint"
            @oninput="e => { _filterEndpoint = e.Value?.ToString() ?? string.Empty; }"
            style="@InputStyle" />
-    <button @onclick="ClearFilters" style="@ButtonStyle">Clear</button>
+    <button @onclick="ClearFilters" style="@ButtonStyle">Clear filters</button>
+
+    <div style="margin-left:auto; display:flex; gap:.5rem;">
+        @if (_selected.Count > 0)
+        {
+            <button @onclick="RemoveSelected"
+                    style="@ButtonStyle; border-color:#fc8181; color:#fc8181;">
+                Remove selected (@_selected.Count)
+            </button>
+        }
+        <button @onclick="ClearLog"
+                style="@ButtonStyle; border-color:#f6ad55; color:#f6ad55;">
+            Clear log
+        </button>
+    </div>
 </div>
 
 <!-- ── Table ───────────────────────────────────────────────────── -->
@@ -29,7 +43,6 @@
     double maxDur  = Watcher.MaxDurationMs;
     long   maxReq  = Watcher.MaxRequestBytes;
     long   maxResp = Watcher.MaxResponseBytes;
-    // timeline helpers
     var allRows = Watcher.Entries.ToList();
     long   timelineOriginTicks = allRows.Count > 0 ? allRows.Min(r => r.RequestTimestamp.UtcTicks) : 0;
     double timelineSpanMs      = allRows.Count > 0
@@ -44,10 +57,15 @@
 }
 else
 {
-    <div style="overflow-x:auto;">
+    <div style="overflow-x:auto;" @onkeydown="OnKeyDown" tabindex="0" @ref="_tableContainer">
         <table style="@TableStyle">
             <thead>
                 <tr style="background:#1a202c; position:sticky; top:0; z-index:1;">
+                    <th style="@Th; width:32px;">
+                        <input type="checkbox" @onchange="ToggleAll"
+                               checked="@(_selected.Count > 0 && rows.All(r => _selected.Contains(r.CorrelationId)))"
+                               title="Select all" />
+                    </th>
                     <th style="@Th">Time</th>
                     <th style="@Th">Model requested</th>
                     <th style="@Th">Forced model</th>
@@ -65,42 +83,50 @@ else
             <tbody>
                 @foreach (var vm in rows)
                 {
-                    // timeline bar
+                    bool isSelected = _selected.Contains(vm.CorrelationId);
+                    string rowBg = isSelected ? "background:#2d3748;" : string.Empty;
+
                     double barStartPct = (vm.RequestTimestamp.UtcTicks - timelineOriginTicks) / TimeSpan.TicksPerMillisecond / timelineSpanMs * 100.0;
-                    double barWidthPct = vm.HasResponse
-                        ? vm.DurationMs / timelineSpanMs * 100.0
-                        : 0.5;
+                    double barWidthPct = vm.HasResponse ? vm.DurationMs / timelineSpanMs * 100.0 : 0.5;
                     barStartPct = Math.Max(0, Math.Min(barStartPct, 99));
                     barWidthPct = Math.Max(0.5, Math.Min(barWidthPct, 100 - barStartPct));
-                    string barColor = vm.HasResponse ? (vm.StatusCode >= 500 ? "#fc8181" : vm.StatusCode >= 400 ? "#f6e05e" : "#68d391") : "#4a5568";
 
-                    <tr style="@RowStyle" @onclick="() => GoDetail(vm)" title="Click for details">
-                        <td style="@Td">@vm.RequestTimestamp.LocalDateTime.ToString("HH:mm:ss")</td>
-                        <td style="@Td; font-family:monospace;">@vm.Model</td>
-                        <td style="@Td; font-family:monospace;">@vm.ForcedModel</td>
-                        <td style="@Td">@vm.MatchedRule</td>
-                        <td style="@Td; max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="@vm.TargetUrl">@vm.TargetUrl</td>
+                    string barColor = string.IsNullOrEmpty(vm.SessionIdentity)
+                        ? (vm.HasResponse ? (vm.StatusCode >= 500 ? "#fc8181" : vm.StatusCode >= 400 ? "#f6e05e" : "#68d391") : "#4a5568")
+                        : vm.SessionColor;
+
+                    <tr style="@RowStyle @rowBg">
+                        <td style="@Td; width:32px;" @onclick:stopPropagation="true">
+                            <input type="checkbox" checked="@isSelected"
+                                   @onchange="() => ToggleRow(vm.CorrelationId)" />
+                        </td>
+                        <td style="@Td; cursor:pointer;" @onclick="() => GoDetail(vm)">@vm.RequestTimestamp.LocalDateTime.ToString("HH:mm:ss")</td>
+                        <td style="@Td; font-family:monospace; cursor:pointer;" @onclick="() => GoDetail(vm)">@vm.Model</td>
+                        <td style="@Td; font-family:monospace; cursor:pointer;" @onclick="() => GoDetail(vm)">@vm.ForcedModel</td>
+                        <td style="@Td; cursor:pointer;" @onclick="() => GoDetail(vm)">@vm.MatchedRule</td>
+                        <td style="@Td; max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer;" title="@vm.TargetUrl" @onclick="() => GoDetail(vm)">@vm.TargetUrl</td>
                         @if (vm.HasResponse)
                         {
-                            <td style="@Td; color:@StatusColor(vm.StatusCode);">@vm.StatusCode</td>
-                            <td style="@Td; color:@HeatColor(vm.DurationMs, maxDur);">@($"{vm.DurationMs / 1000.0:F3} s")</td>
-                            <td style="@Td; color:@HeatColor(vm.RequestBytes, maxReq);">@FormatBytes(vm.RequestBytes)</td>
-                            <td style="@Td; color:@HeatColor(vm.ResponseBytes, maxResp);">@FormatBytes(vm.ResponseBytes)</td>
-                            <td style="@Td; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#a0aec0;" title="@vm.RequestPreview">@vm.RequestPreview</td>
-                            <td style="@Td; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#a0aec0;" title="@vm.ResponsePreview">@vm.ResponsePreview</td>
+                            <td style="@Td; color:@StatusColor(vm.StatusCode); cursor:pointer;" @onclick="() => GoDetail(vm)">@vm.StatusCode</td>
+                            <td style="@Td; color:@HeatColor(vm.DurationMs, maxDur); cursor:pointer;" @onclick="() => GoDetail(vm)">@($"{vm.DurationMs / 1000.0:F3} s")</td>
+                            <td style="@Td; color:@HeatColor(vm.RequestBytes, maxReq); cursor:pointer;" @onclick="() => GoDetail(vm)">@FormatBytes(vm.RequestBytes)</td>
+                            <td style="@Td; color:@HeatColor(vm.ResponseBytes, maxResp); cursor:pointer;" @onclick="() => GoDetail(vm)">@FormatBytes(vm.ResponseBytes)</td>
+                            <td style="@Td; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#a0aec0; cursor:pointer;" title="@vm.RequestPreview" @onclick="() => GoDetail(vm)">@vm.RequestPreview</td>
+                            <td style="@Td; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#a0aec0; cursor:pointer;" title="@vm.ResponsePreview" @onclick="() => GoDetail(vm)">@vm.ResponsePreview</td>
                         }
                         else
                         {
-                            <td style="@Td; color:#718096;" title="Waiting for response…">⏳</td>
-                            <td style="@Td; color:#718096;">—</td>
-                            <td style="@Td; color:@HeatColor(vm.RequestBytes, maxReq);">@FormatBytes(vm.RequestBytes)</td>
-                            <td style="@Td; color:#718096;">—</td>
-                            <td style="@Td; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#a0aec0;" title="@vm.RequestPreview">@vm.RequestPreview</td>
-                            <td style="@Td; color:#718096;">—</td>
+                            <td style="@Td; color:#718096; cursor:pointer;" title="Waiting for response…" @onclick="() => GoDetail(vm)">⏳</td>
+                            <td style="@Td; color:#718096; cursor:pointer;" @onclick="() => GoDetail(vm)">—</td>
+                            <td style="@Td; color:@HeatColor(vm.RequestBytes, maxReq); cursor:pointer;" @onclick="() => GoDetail(vm)">@FormatBytes(vm.RequestBytes)</td>
+                            <td style="@Td; color:#718096; cursor:pointer;" @onclick="() => GoDetail(vm)">—</td>
+                            <td style="@Td; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#a0aec0; cursor:pointer;" title="@vm.RequestPreview" @onclick="() => GoDetail(vm)">@vm.RequestPreview</td>
+                            <td style="@Td; color:#718096; cursor:pointer;" @onclick="() => GoDetail(vm)">—</td>
                         }
-                        <td style="@Td; min-width:120px; padding-top:.55rem; padding-bottom:.55rem;">
-                            <div style="position:relative; height:10px; background:#2d3748; border-radius:3px; overflow:hidden;">
-                                <div style="position:absolute; left:@($"{barStartPct:F1}")%; width:@($"{barWidthPct:F1}")%; height:100%; background:@barColor; border-radius:3px;"></div>
+                        <td style="@Td; min-width:120px; padding-top:.55rem; padding-bottom:.55rem; cursor:pointer;" @onclick="() => GoDetail(vm)">
+                            <div style="position:relative; height:10px; background:#2d3748; border-radius:3px; overflow:hidden;"
+                                 title="@(string.IsNullOrEmpty(vm.SessionIdentity) ? null : $"session: {vm.SessionIdentity}")">
+                                <div style="position:absolute; left:@($"{barStartPct:F1}")%; width:@($"{barWidthPct:F1}")%; height:100%; background:@barColor; border-radius:3px; box-shadow:0 0 4px @barColor;"></div>
                             </div>
                         </td>
                     </tr>
@@ -108,17 +134,22 @@ else
             </tbody>
         </table>
     </div>
-    <p style="color:#718096; font-size:.8rem; margin-top:.5rem;">@rows.Count() entries shown of @Watcher.Entries.Count total</p>
+    <p style="color:#718096; font-size:.8rem; margin-top:.5rem;">
+        @rows.Count entries shown of @Watcher.Entries.Count total
+        @if (_selected.Count > 0) { <span> — @_selected.Count selected</span> }
+    </p>
 }
 
 @code {
     [Inject] NavigationManager Nav { get; set; } = default!;
 
-    string _search        = string.Empty;
-    string _filterModel   = string.Empty;
-    string _filterRule    = string.Empty;
-    string _filterEndpoint= string.Empty;
+    string _search         = string.Empty;
+    string _filterModel    = string.Empty;
+    string _filterRule     = string.Empty;
+    string _filterEndpoint = string.Empty;
 
+    readonly HashSet<Guid> _selected = new();
+    Microsoft.AspNetCore.Components.ElementReference _tableContainer;
     protected override void OnInitialized()
         => Watcher.Changed += OnChanged;
 
@@ -134,6 +165,39 @@ else
         _filterModel    = string.Empty;
         _filterRule     = string.Empty;
         _filterEndpoint = string.Empty;
+    }
+
+    void ToggleRow(Guid id)
+    {
+        if (!_selected.Add(id)) _selected.Remove(id);
+    }
+
+    void ToggleAll(Microsoft.AspNetCore.Components.ChangeEventArgs e)
+    {
+        bool check = e.Value is true;
+        if (check)
+            foreach (var vm in Filtered) _selected.Add(vm.CorrelationId);
+        else
+            _selected.Clear();
+    }
+
+    void RemoveSelected()
+    {
+        if (_selected.Count == 0) return;
+        Watcher.RemoveEntries(_selected.ToList());
+        _selected.Clear();
+    }
+
+    void ClearLog()
+    {
+        _selected.Clear();
+        Watcher.ClearAll();
+    }
+
+    void OnKeyDown(Microsoft.AspNetCore.Components.Web.KeyboardEventArgs e)
+    {
+        if (e.Key == "Delete" && _selected.Count > 0)
+            RemoveSelected();
     }
 
     IEnumerable<LogEntryViewModel> Filtered
@@ -161,27 +225,16 @@ else
     }
 
     void GoDetail(LogEntryViewModel vm)
-    {
-        Nav.NavigateTo($"/dashboard/detail/{vm.CorrelationId:N}");
-    }
+        => Nav.NavigateTo($"/dashboard/detail/{vm.CorrelationId:N}");
 
     // ── colour helpers ──────────────────────────────────────────
 
     static string HeatColor(double value, double max)
     {
-        if (max <= 0) return "#68d391"; // pure green
+        if (max <= 0) return "#68d391";
         var ratio = Math.Clamp(value / max, 0, 1);
-        // green #68d391 → yellow #f6e05e → red #fc8181
-        if (ratio < 0.5)
-        {
-            var t = ratio * 2;
-            return Lerp("#68d391", "#f6e05e", t);
-        }
-        else
-        {
-            var t = (ratio - 0.5) * 2;
-            return Lerp("#f6e05e", "#fc8181", t);
-        }
+        if (ratio < 0.5) return Lerp("#68d391", "#f6e05e", ratio * 2);
+        return Lerp("#f6e05e", "#fc8181", (ratio - 0.5) * 2);
     }
 
     static string StatusColor(int code) => code < 300 ? "#68d391" : code < 500 ? "#f6e05e" : "#fc8181";
@@ -192,10 +245,7 @@ else
             (Convert.ToInt32(h[1..3], 16), Convert.ToInt32(h[3..5], 16), Convert.ToInt32(h[5..7], 16));
         var (r1,g1,b1) = Parse(hex1);
         var (r2,g2,b2) = Parse(hex2);
-        int r = (int)(r1 + (r2-r1)*t);
-        int g = (int)(g1 + (g2-g1)*t);
-        int b = (int)(b1 + (b2-b1)*t);
-        return $"#{r:X2}{g:X2}{b:X2}";
+        return $"#{(int)(r1+(r2-r1)*t):X2}{(int)(g1+(g2-g1)*t):X2}{(int)(b1+(b2-b1)*t):X2}";
     }
 
     static string FormatBytes(long bytes) => bytes switch
@@ -207,10 +257,11 @@ else
 
     // ── inline styles ───────────────────────────────────────────
 
-    const string TableStyle    = "width:100%; border-collapse:collapse; font-size:.8rem;";
-    const string Th            = "padding:.5rem .75rem; text-align:left; border-bottom:1px solid #2d3748; white-space:nowrap; color:#90cdf4; font-weight:500;";
-    const string Td            = "padding:.45rem .75rem; border-bottom:1px solid #1a202c; vertical-align:top;";
-    const string RowStyle      = "cursor:pointer; transition:background .15s;";
-    const string InputStyle    = "background:#1a202c; border:1px solid #2d3748; color:#e2e8f0; border-radius:6px; padding:.4rem .75rem; font-size:.85rem; min-width:140px;";
-    const string ButtonStyle   = "background:#2d3748; border:1px solid #4a5568; color:#e2e8f0; border-radius:6px; padding:.4rem .9rem; cursor:pointer; font-size:.85rem;";
+    const string TableStyle = "width:100%; border-collapse:collapse; font-size:.8rem;";
+    const string Th         = "padding:.5rem .75rem; text-align:left; border-bottom:1px solid #2d3748; white-space:nowrap; color:#90cdf4; font-weight:500;";
+    const string Td         = "padding:.45rem .75rem; border-bottom:1px solid #1a202c; vertical-align:top;";
+    const string RowStyle   = "transition:background .15s;";
+    const string InputStyle = "background:#1a202c; border:1px solid #2d3748; color:#e2e8f0; border-radius:6px; padding:.4rem .75rem; font-size:.85rem; min-width:140px;";
+    const string ButtonStyle= "background:#2d3748; border:1px solid #4a5568; color:#e2e8f0; border-radius:6px; padding:.4rem .9rem; cursor:pointer; font-size:.85rem;";
 }
+

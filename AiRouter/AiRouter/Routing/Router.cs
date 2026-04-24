@@ -241,9 +241,11 @@ class Router : IDisposable
 
         // --- Log Response entry ----------------------------------------------
         stopwatch.Stop();
-        var loggedResponseBody = isStream
-            ? AiRouter.Logging.SsePostProcessor.Process(responseBody)
-            : responseBody;
+        // Persist the upstream payload losslessly so the dashboard can inspect
+        // every detail (in particular tool_use requests). For SSE we keep one
+        // entry per event; for single responses we keep the original body.
+        var loggedResponseBody = AiRouter.Logging.ResponseBodyBuilder.Build(
+            responseBody, contentType, isStream);
 
         await LogResponseAsync(
             correlationId,
