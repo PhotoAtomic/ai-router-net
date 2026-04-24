@@ -222,6 +222,9 @@ class Router : IDisposable
         {
             stopwatch.Stop();
             var responseTimestamp = DateTimeOffset.Now;
+            var loggedResponseBody = isStream
+                ? AiRouter.Logging.SsePostProcessor.Process(responseBody)
+                : responseBody;
             var entry = new LogEntry(
                 RequestTimestamp:  requestTimestamp,
                 ResponseTimestamp: responseTimestamp,
@@ -235,7 +238,7 @@ class Router : IDisposable
                 RequestHeaders:    requestHeaders,
                 ResponseHeaders:   responseHeaders,
                 RequestBody:       body,
-                ResponseBody:      responseBody);
+                ResponseBody:      loggedResponseBody);
             await _logger.LogAsync(entry);
         }
     }
