@@ -75,6 +75,8 @@ class Router : IDisposable
         var req = ctx.Request;
         var res = ctx.Response;
 
+        // UUID v7 — time-ordered, sortable; correlates the Request and Response log entries.
+        var correlationId = Guid.CreateVersion7();
         var requestTimestamp = DateTimeOffset.Now;
         var stopwatch = Stopwatch.StartNew();
 
@@ -84,32 +86,52 @@ class Router : IDisposable
             body = await sr.ReadToEndAsync();
 
         var requestSizeBytes = (long)Encoding.UTF8.GetByteCount(body);
+        var requestHeaders   = CollectRequestHeaders(req.Headers);
 
-        // --- Extract model ---------------------------------------------------
+        // --- Extract model (may be null on malformed requests) ---------------
         string? model = ExtractModel(body);
-        if (string.IsNullOrEmpty(model))
-        {
-            await WriteErrorAsync(res, 400, "missing 'model' field in request body");
-            return;
-        }
 
-        // --- Find route ------------------------------------------------------
-        var rule = FindRule(snap, model);
-        if (rule is null)
-        {
-            await WriteErrorAsync(res, 404, $"No routing rule matched model '{model}'");
-            return;
-        }
+        // --- Find route (may be null) ----------------------------------------
+        var rule       = !string.IsNullOrEmpty(model) ? FindRule(snap, model) : null;
+        var targetUrl  = rule is not null ? rule.BaseUrl.TrimEnd('/') + MessagesPath : null;
 
-        var targetUrl = rule.BaseUrl.TrimEnd('/') + MessagesPath;
-        Console.WriteLine($"[route] {model} → {targetUrl}  (rule: {rule.Pattern})");
-
-        // --- Replace model in body if ForceModel is configured ---------------
-        if (!string.IsNullOrEmpty(rule.ForceModel))
+        // --- Apply ForceModel BEFORE logging the Request so the body we log --
+        // matches what the upstream will actually receive. ---------------------
+        if (rule is not null && !string.IsNullOrEmpty(rule.ForceModel))
         {
             body = ReplaceModel(body, rule.ForceModel);
-            Console.WriteLine($"[route] model overridden: '{model}' → '{rule.ForceModel}'");
+            requestSizeBytes = (long)Encoding.UTF8.GetByteCount(body);
         }
+
+        // --- Log the Request entry IMMEDIATELY (before any upstream work) ----
+        await LogRequestAsync(
+            correlationId,
+            requestTimestamp,
+            model ?? string.Empty,
+            rule?.Pattern ?? string.Empty,
+            targetUrl ?? string.Empty,
+            requestSizeBytes,
+            requestHeaders,
+            body);
+
+        // --- Validate ---------------------------------------------------------
+        if (string.IsNullOrEmpty(model))
+        {
+            await WriteErrorAndLogAsync(res, 400, "missing 'model' field in request body",
+                correlationId, stopwatch);
+            return;
+        }
+
+        if (rule is null || targetUrl is null)
+        {
+            await WriteErrorAndLogAsync(res, 404, $"No routing rule matched model '{model}'",
+                correlationId, stopwatch);
+            return;
+        }
+
+        Console.WriteLine($"[route] {model} → {targetUrl}  (rule: {rule.Pattern})");
+        if (!string.IsNullOrEmpty(rule.ForceModel))
+            Console.WriteLine($"[route] model overridden: '{model}' → '{rule.ForceModel}'");
 
         // --- Ensure managed process is running (if configured for this rule) -
         if (rule.ProcessManager is not null)
@@ -121,7 +143,8 @@ class Router : IDisposable
             catch (Exception ex)
             {
                 Console.WriteLine($"[error] Failed to start process for rule '{rule.Pattern}': {ex.Message}");
-                await WriteErrorAsync(res, 503, $"Managed process failed to start: {ex.Message}");
+                await WriteErrorAndLogAsync(res, 503, $"Managed process failed to start: {ex.Message}",
+                    correlationId, stopwatch);
                 return;
             }
         }
@@ -129,8 +152,6 @@ class Router : IDisposable
         // --- Build upstream request ------------------------------------------
         using var upstreamReq = new HttpRequestMessage(HttpMethod.Post, targetUrl);
         upstreamReq.Content = new StringContent(body, Encoding.UTF8, "application/json");
-
-        var requestHeaders = CollectRequestHeaders(req.Headers);
 
         foreach (var (name, values) in req.Headers)
         {
@@ -163,7 +184,8 @@ class Router : IDisposable
         catch (Exception ex)
         {
             Console.WriteLine($"[error] Upstream call failed: {ex.Message}");
-            await WriteErrorAsync(res, 502, $"Upstream unreachable: {ex.Message}");
+            await WriteErrorAndLogAsync(res, 502, $"Upstream unreachable: {ex.Message}",
+                correlationId, stopwatch);
             return;
         }
 
@@ -217,30 +239,104 @@ class Router : IDisposable
             await res.Body.WriteAsync(rawBytes, ctx.RequestAborted);
         }
 
-        // --- Log entry -------------------------------------------------------
-        if (_logger is not null)
+        // --- Log Response entry ----------------------------------------------
+        stopwatch.Stop();
+        var loggedResponseBody = isStream
+            ? AiRouter.Logging.SsePostProcessor.Process(responseBody)
+            : responseBody;
+
+        await LogResponseAsync(
+            correlationId,
+            (int)upstreamRes.StatusCode,
+            stopwatch.Elapsed.TotalMilliseconds,
+            responseSizeBytes,
+            responseHeaders,
+            loggedResponseBody);
+    }
+
+    // -------------------------------------------------------------------------
+    // Logging helpers
+    // -------------------------------------------------------------------------
+
+    private Task LogRequestAsync(
+        Guid correlationId,
+        DateTimeOffset timestamp,
+        string model,
+        string matchedRule,
+        string targetUrl,
+        long requestSizeBytes,
+        Dictionary<string, string> requestHeaders,
+        string requestBody)
+    {
+        if (_logger is null) return Task.CompletedTask;
+        var entry = new LogEntry(
+            CorrelationId:    correlationId,
+            Type:             LogEntryType.Request,
+            Timestamp:        timestamp,
+            Model:            model,
+            MatchedRule:      matchedRule,
+            TargetUrl:        targetUrl,
+            RequestSizeBytes: requestSizeBytes,
+            RequestHeaders:   requestHeaders,
+            RequestBody:      requestBody);
+        return _logger.LogAsync(entry);
+    }
+
+    private Task LogResponseAsync(
+        Guid correlationId,
+        int statusCode,
+        double durationMs,
+        long responseSizeBytes,
+        Dictionary<string, string> responseHeaders,
+        string responseBody)
+    {
+        if (_logger is null) return Task.CompletedTask;
+        var entry = new LogEntry(
+            CorrelationId:     correlationId,
+            Type:              LogEntryType.Response,
+            Timestamp:         DateTimeOffset.Now,
+            StatusCode:        statusCode,
+            DurationMs:        durationMs,
+            ResponseSizeBytes: responseSizeBytes,
+            ResponseHeaders:   responseHeaders,
+            ResponseBody:      responseBody);
+        return _logger.LogAsync(entry);
+    }
+
+    // Writes an error response to the client AND emits the matching Response log entry.
+    private async Task WriteErrorAndLogAsync(
+        HttpResponse res,
+        int status,
+        string message,
+        Guid correlationId,
+        Stopwatch stopwatch)
+    {
+        var errorBody = JsonSerializer.Serialize(
+            new ProxyErrorResponse(new ProxyErrorDetail("proxy_error", message)),
+            AiRouterJsonContext.Default.ProxyErrorResponse);
+
+        if (!res.HasStarted)
         {
-            stopwatch.Stop();
-            var responseTimestamp = DateTimeOffset.Now;
-            var loggedResponseBody = isStream
-                ? AiRouter.Logging.SsePostProcessor.Process(responseBody)
-                : responseBody;
-            var entry = new LogEntry(
-                RequestTimestamp:  requestTimestamp,
-                ResponseTimestamp: responseTimestamp,
-                DurationMs:        stopwatch.Elapsed.TotalMilliseconds,
-                Model:             model,
-                MatchedRule:       rule.Pattern,
-                TargetUrl:         targetUrl,
-                StatusCode:        (int)upstreamRes.StatusCode,
-                RequestSizeBytes:  requestSizeBytes,
-                ResponseSizeBytes: responseSizeBytes,
-                RequestHeaders:    requestHeaders,
-                ResponseHeaders:   responseHeaders,
-                RequestBody:       body,
-                ResponseBody:      loggedResponseBody);
-            await _logger.LogAsync(entry);
+            res.StatusCode = status;
+            res.ContentType = "application/json";
+            await res.WriteAsync(errorBody);
         }
+        else
+        {
+            Console.WriteLine($"[warn] Cannot write error ({status}) — response already started: {message}");
+        }
+
+        stopwatch.Stop();
+        await LogResponseAsync(
+            correlationId,
+            status,
+            stopwatch.Elapsed.TotalMilliseconds,
+            Encoding.UTF8.GetByteCount(errorBody),
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["content-type"] = "application/json",
+            },
+            errorBody);
     }
 
     // -------------------------------------------------------------------------
@@ -339,17 +435,6 @@ class Router : IDisposable
         {
             return json;
         }
-    }
-
-    private static async Task WriteErrorAsync(HttpResponse res, int status, string message)
-    {
-        if (res.HasStarted) { Console.WriteLine($"[warn] Cannot write error ({status}): {message}"); return; }
-        res.StatusCode = status;
-        res.ContentType = "application/json";
-        var body = JsonSerializer.Serialize(
-            new ProxyErrorResponse(new ProxyErrorDetail("proxy_error", message)),
-            AiRouterJsonContext.Default.ProxyErrorResponse);
-        await res.WriteAsync(body);
     }
 
     public void Dispose() { /* ProcessManagers are owned by ProcessRegistry */ }

@@ -4,46 +4,68 @@ using AiRouter.Logging;
 namespace AiRouter.Dashboard;
 
 /// <summary>
-/// View-model wrapping a <see cref="LogEntry"/> with pre-computed display fields.
+/// View-model representing a single proxied transaction (request + response),
+/// merged from two JSONL log entries that share the same <see cref="CorrelationId"/>.
+/// Mutable: the request half is set first, the response half is filled in later.
 /// </summary>
 public sealed class LogEntryViewModel
 {
-    // --- raw data ---
-    public LogEntry Raw { get; init; } = default!;
+    // --- identity ---
+    public Guid CorrelationId { get; init; }
 
-    // --- convenience aliases ---
-    public DateTimeOffset RequestTimestamp  => Raw.RequestTimestamp;
-    public DateTimeOffset ResponseTimestamp => Raw.ResponseTimestamp;
-    public double         DurationMs        => Raw.DurationMs;
-    public string         Model             => Raw.Model;
-    public string         MatchedRule       => Raw.MatchedRule;
-    public string         TargetUrl         => Raw.TargetUrl;
-    public int            StatusCode        => Raw.StatusCode;
-    public long           RequestBytes      => Raw.RequestSizeBytes;
-    public long           ResponseBytes     => Raw.ResponseSizeBytes;
-    public string         RequestBody       => Raw.RequestBody;
-    public string         ResponseBody      => Raw.ResponseBody;
+    // --- request half ---
+    public DateTimeOffset            RequestTimestamp { get; private set; }
+    public string                    Model            { get; private set; } = string.Empty;
+    public string                    ForcedModel      { get; private set; } = string.Empty;
+    public string                    MatchedRule      { get; private set; } = string.Empty;
+    public string                    TargetUrl        { get; private set; } = string.Empty;
+    public long                      RequestBytes     { get; private set; }
+    public Dictionary<string, string>? RequestHeaders { get; private set; }
+    public string                    RequestBody      { get; private set; } = string.Empty;
+    public string                    RequestPreview   { get; private set; } = string.Empty;
 
-    // --- extracted / computed ---
-    public string ForcedModel       { get; init; } = string.Empty;
-    public string RequestPreview    { get; init; } = string.Empty;
-    public string ResponsePreview   { get; init; } = string.Empty;
+    // --- response half (populated when the Response entry arrives) ---
+    public bool                      HasResponse       { get; private set; }
+    public DateTimeOffset?           ResponseTimestamp { get; private set; }
+    public double                    DurationMs        { get; private set; }
+    public int                       StatusCode        { get; private set; }
+    public long                      ResponseBytes     { get; private set; }
+    public Dictionary<string, string>? ResponseHeaders { get; private set; }
+    public string                    ResponseBody      { get; private set; } = string.Empty;
+    public string                    ResponsePreview   { get; private set; } = string.Empty;
 
     // -------------------------------------------------------------------------
 
-    public static LogEntryViewModel FromLogEntry(LogEntry e)
+    public static LogEntryViewModel FromRequest(LogEntry e)
     {
-        var forcedModel    = ExtractForcedModel(e.RequestBody);
-        var reqPreview     = ExtractLastMessagePreview(e.RequestBody);
-        var respPreview    = ExtractResponsePreview(e.ResponseBody);
+        var vm = new LogEntryViewModel { CorrelationId = e.CorrelationId };
+        vm.ApplyRequest(e);
+        return vm;
+    }
 
-        return new LogEntryViewModel
-        {
-            Raw           = e,
-            ForcedModel   = forcedModel,
-            RequestPreview = reqPreview,
-            ResponsePreview= respPreview,
-        };
+    public void ApplyRequest(LogEntry e)
+    {
+        RequestTimestamp = e.Timestamp;
+        Model            = e.Model ?? string.Empty;
+        ForcedModel      = ExtractForcedModel(e.RequestBody ?? string.Empty, e.Model);
+        MatchedRule      = e.MatchedRule ?? string.Empty;
+        TargetUrl        = e.TargetUrl   ?? string.Empty;
+        RequestBytes     = e.RequestSizeBytes ?? 0;
+        RequestHeaders   = e.RequestHeaders;
+        RequestBody      = e.RequestBody ?? string.Empty;
+        RequestPreview   = ExtractLastMessagePreview(RequestBody);
+    }
+
+    public void ApplyResponse(LogEntry e)
+    {
+        HasResponse       = true;
+        ResponseTimestamp = e.Timestamp;
+        DurationMs        = e.DurationMs        ?? 0;
+        StatusCode        = e.StatusCode        ?? 0;
+        ResponseBytes     = e.ResponseSizeBytes ?? 0;
+        ResponseHeaders   = e.ResponseHeaders;
+        ResponseBody      = e.ResponseBody ?? string.Empty;
+        ResponsePreview   = ExtractResponsePreview(ResponseBody);
     }
 
     // -------------------------------------------------------------------------
@@ -52,7 +74,19 @@ public sealed class LogEntryViewModel
 
     private const int PreviewLength = 120;
 
-    private static string ExtractForcedModel(string body)
+    private static string ExtractForcedModel(string body, string? requestedModel)
+    {
+        var bodyModel = ExtractModelFromBody(body);
+        // If the body model differs from the originally requested model, that's the forced one.
+        if (!string.IsNullOrEmpty(requestedModel) &&
+            !string.Equals(bodyModel, requestedModel, StringComparison.Ordinal))
+        {
+            return bodyModel;
+        }
+        return string.Empty;
+    }
+
+    private static string ExtractModelFromBody(string body)
     {
         try
         {
@@ -72,7 +106,6 @@ public sealed class LogEntryViewModel
             if (!doc.RootElement.TryGetProperty("messages", out var msgs)) return string.Empty;
             if (msgs.ValueKind != JsonValueKind.Array || msgs.GetArrayLength() == 0) return string.Empty;
 
-            // last message
             JsonElement last = default;
             foreach (var m in msgs.EnumerateArray()) last = m;
 
@@ -86,7 +119,6 @@ public sealed class LogEntryViewModel
         try
         {
             using var doc = JsonDocument.Parse(body);
-            // Anthropic-style: content[].text
             if (doc.RootElement.TryGetProperty("content", out var content)
                 && content.ValueKind == JsonValueKind.Array)
             {
@@ -96,7 +128,6 @@ public sealed class LogEntryViewModel
                         return Truncate(t.GetString() ?? string.Empty);
                 }
             }
-            // OpenAI-style: choices[0].message.content
             if (doc.RootElement.TryGetProperty("choices", out var choices)
                 && choices.ValueKind == JsonValueKind.Array)
             {

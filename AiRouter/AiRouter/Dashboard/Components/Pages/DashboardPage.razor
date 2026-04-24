@@ -62,12 +62,24 @@ else
                         <td style="@Td; font-family:monospace;">@vm.ForcedModel</td>
                         <td style="@Td">@vm.MatchedRule</td>
                         <td style="@Td; max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="@vm.TargetUrl">@vm.TargetUrl</td>
-                        <td style="@Td; color:@StatusColor(vm.StatusCode);">@vm.StatusCode</td>
-                        <td style="@Td; color:@HeatColor(vm.DurationMs, maxDur);">@($"{vm.DurationMs:F0} ms")</td>
-                        <td style="@Td; color:@HeatColor(vm.RequestBytes, maxReq);">@FormatBytes(vm.RequestBytes)</td>
-                        <td style="@Td; color:@HeatColor(vm.ResponseBytes, maxResp);">@FormatBytes(vm.ResponseBytes)</td>
-                        <td style="@Td; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#a0aec0;" title="@vm.RequestPreview">@vm.RequestPreview</td>
-                        <td style="@Td; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#a0aec0;" title="@vm.ResponsePreview">@vm.ResponsePreview</td>
+                        @if (vm.HasResponse)
+                        {
+                            <td style="@Td; color:@StatusColor(vm.StatusCode);">@vm.StatusCode</td>
+                            <td style="@Td; color:@HeatColor(vm.DurationMs, maxDur);">@($"{vm.DurationMs:F0} ms")</td>
+                            <td style="@Td; color:@HeatColor(vm.RequestBytes, maxReq);">@FormatBytes(vm.RequestBytes)</td>
+                            <td style="@Td; color:@HeatColor(vm.ResponseBytes, maxResp);">@FormatBytes(vm.ResponseBytes)</td>
+                            <td style="@Td; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#a0aec0;" title="@vm.RequestPreview">@vm.RequestPreview</td>
+                            <td style="@Td; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#a0aec0;" title="@vm.ResponsePreview">@vm.ResponsePreview</td>
+                        }
+                        else
+                        {
+                            <td style="@Td; color:#718096;" title="Waiting for response…">⏳</td>
+                            <td style="@Td; color:#718096;">—</td>
+                            <td style="@Td; color:@HeatColor(vm.RequestBytes, maxReq);">@FormatBytes(vm.RequestBytes)</td>
+                            <td style="@Td; color:#718096;">—</td>
+                            <td style="@Td; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#a0aec0;" title="@vm.RequestPreview">@vm.RequestPreview</td>
+                            <td style="@Td; color:#718096;">—</td>
+                        }
                     </tr>
                 }
             </tbody>
@@ -127,8 +139,7 @@ else
 
     void GoDetail(LogEntryViewModel vm)
     {
-        var idx = Watcher.Entries.IndexOf(vm);
-        Nav.NavigateTo($"/dashboard/detail/{idx}");
+        Nav.NavigateTo($"/dashboard/detail/{vm.CorrelationId:N}");
     }
 
     // ── colour helpers ──────────────────────────────────────────

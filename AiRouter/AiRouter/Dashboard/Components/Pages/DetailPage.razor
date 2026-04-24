@@ -1,9 +1,14 @@
 @namespace AiRouter.Dashboard.Components.Pages
-@page "/dashboard/detail/{Index:int}"
+@page "/dashboard/detail/{Id}"
+@implements IDisposable
 @inject LogWatcherService Watcher
 
 @{
-    var vm = (Index >= 0 && Index < Watcher.Entries.Count) ? Watcher.Entries[Index] : null;
+    LogEntryViewModel? vm = null;
+    if (Guid.TryParse(Id, out var cid))
+    {
+        vm = Watcher.Entries.FirstOrDefault(e => e.CorrelationId == cid);
+    }
 }
 
 @if (vm is null)
@@ -16,22 +21,27 @@ else
         <div style="display:flex; align-items:center; gap:1rem; margin-bottom:1.5rem;">
             <a href="/dashboard" style="color:#63b3ed;">← Back to dashboard</a>
             <h2 style="margin:0; font-size:1.2rem; color:#90cdf4;">Request detail</h2>
+            @if (!vm.HasResponse)
+            {
+                <span style="color:#ecc94b; font-size:.85rem;">⏳ waiting for response…</span>
+            }
         </div>
 
         <!-- ── Overview card ─────────────────────────────────── -->
         <div style="@Card">
             <h3 style="@CardTitle">Overview</h3>
             <div style="@Grid">
+                <Prop Label="Correlation ID" Value="@vm.CorrelationId.ToString()" Mono="true" />
                 <Prop Label="Request time"   Value="@vm.RequestTimestamp.LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss.fff")" />
-                <Prop Label="Response time"  Value="@vm.ResponseTimestamp.LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss.fff")" />
-                <Prop Label="Duration"       Value="@($"{vm.DurationMs:F2} ms")" />
-                <Prop Label="HTTP status"    Value="@vm.StatusCode.ToString()" />
+                <Prop Label="Response time"  Value="@(vm.HasResponse ? vm.ResponseTimestamp!.Value.LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss.fff") : "—")" />
+                <Prop Label="Duration"       Value="@(vm.HasResponse ? $"{vm.DurationMs:F2} ms" : "—")" />
+                <Prop Label="HTTP status"    Value="@(vm.HasResponse ? vm.StatusCode.ToString() : "—")" />
                 <Prop Label="Model requested"Value="@vm.Model" Mono="true" />
                 <Prop Label="Forced model"   Value="@vm.ForcedModel" Mono="true" />
                 <Prop Label="Matched rule"   Value="@vm.MatchedRule" Mono="true" />
                 <Prop Label="Target endpoint"Value="@vm.TargetUrl" Mono="true" />
                 <Prop Label="Request size"   Value="@FormatBytes(vm.RequestBytes)" />
-                <Prop Label="Response size"  Value="@FormatBytes(vm.ResponseBytes)" />
+                <Prop Label="Response size"  Value="@(vm.HasResponse ? FormatBytes(vm.ResponseBytes) : "—")" />
             </div>
         </div>
 
@@ -39,7 +49,7 @@ else
         <div style="@Card">
             <h3 style="@CardTitle">Request headers</h3>
             <table style="@TableStyle">
-                @foreach (var kv in vm.Raw.RequestHeaders ?? Enumerable.Empty<KeyValuePair<string, string>>())
+                @foreach (var kv in vm.RequestHeaders ?? Enumerable.Empty<KeyValuePair<string, string>>())
                 {
                     <tr><td style="@KeyTd">@kv.Key</td><td style="@ValTd">@kv.Value</td></tr>
                 }
@@ -49,12 +59,19 @@ else
         <!-- ── Response headers ──────────────────────────────── -->
         <div style="@Card">
             <h3 style="@CardTitle">Response headers</h3>
-            <table style="@TableStyle">
-                @foreach (var kv in vm.Raw.ResponseHeaders ?? Enumerable.Empty<KeyValuePair<string, string>>())
-                {
-                    <tr><td style="@KeyTd">@kv.Key</td><td style="@ValTd">@kv.Value</td></tr>
-                }
-            </table>
+            @if (vm.HasResponse)
+            {
+                <table style="@TableStyle">
+                    @foreach (var kv in vm.ResponseHeaders ?? Enumerable.Empty<KeyValuePair<string, string>>())
+                    {
+                        <tr><td style="@KeyTd">@kv.Key</td><td style="@ValTd">@kv.Value</td></tr>
+                    }
+                </table>
+            }
+            else
+            {
+                <p style="color:#718096; margin:0;">— waiting for response —</p>
+            }
         </div>
 
         <!-- ── Request body ──────────────────────────────────── -->
@@ -70,15 +87,31 @@ else
         <div style="@Card">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:.75rem;">
                 <h3 style="margin:0; font-size:1rem; color:#90cdf4;">Response body</h3>
-                <span style="font-size:.75rem; color:#718096;">@FormatBytes(vm.ResponseBytes)</span>
+                <span style="font-size:.75rem; color:#718096;">@(vm.HasResponse ? FormatBytes(vm.ResponseBytes) : "—")</span>
             </div>
-            <pre style="@PreStyle">@PrettyJson(vm.ResponseBody)</pre>
+            @if (vm.HasResponse)
+            {
+                <pre style="@PreStyle">@PrettyJson(vm.ResponseBody)</pre>
+            }
+            else
+            {
+                <p style="color:#718096; margin:0;">— waiting for response —</p>
+            }
         </div>
     </div>
 }
 
 @code {
-    [Parameter] public int Index { get; set; }
+    [Parameter] public string Id { get; set; } = string.Empty;
+
+    protected override void OnInitialized()
+        => Watcher.Changed += OnChanged;
+
+    void OnChanged()
+        => InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+        => Watcher.Changed -= OnChanged;
 
     static string FormatBytes(long bytes) => bytes switch
     {

@@ -29,6 +29,7 @@ public sealed class LogWatcherService : IDisposable
 
     private readonly string            _path;
     private readonly List<LogEntryViewModel> _entries = [];
+    private readonly Dictionary<Guid, LogEntryViewModel> _byCorrelation = new();
     private readonly FileSystemWatcher _watcher;
     private readonly object            _lock = new();
     private long                       _readPosition;
@@ -104,13 +105,37 @@ public sealed class LogWatcherService : IDisposable
             var entry = System.Text.Json.JsonSerializer.Deserialize(line, AiRouterJsonContext.Default.LogEntry);
             if (entry is null) return false;
 
-            var vm = LogEntryViewModel.FromLogEntry(entry);
             lock (_lock)
             {
-                _entries.Insert(0, vm); // newest first
-                if (vm.DurationMs    > MaxDurationMs)    MaxDurationMs    = vm.DurationMs;
-                if (vm.RequestBytes  > MaxRequestBytes)  MaxRequestBytes  = vm.RequestBytes;
-                if (vm.ResponseBytes > MaxResponseBytes) MaxResponseBytes = vm.ResponseBytes;
+                if (entry.Type == LogEntryType.Request)
+                {
+                    if (_byCorrelation.TryGetValue(entry.CorrelationId, out var existing))
+                    {
+                        // Defensive: a duplicate Request shouldn't normally happen.
+                        existing.ApplyRequest(entry);
+                    }
+                    else
+                    {
+                        var vm = LogEntryViewModel.FromRequest(entry);
+                        _byCorrelation[entry.CorrelationId] = vm;
+                        _entries.Insert(0, vm); // newest first
+                    }
+                }
+                else // Response
+                {
+                    if (!_byCorrelation.TryGetValue(entry.CorrelationId, out var vm))
+                    {
+                        // Stand-alone Response (e.g. log was truncated): create a placeholder VM.
+                        vm = new LogEntryViewModel { CorrelationId = entry.CorrelationId };
+                        _byCorrelation[entry.CorrelationId] = vm;
+                        _entries.Insert(0, vm);
+                    }
+                    vm.ApplyResponse(entry);
+
+                    if (vm.DurationMs    > MaxDurationMs)    MaxDurationMs    = vm.DurationMs;
+                    if (vm.RequestBytes  > MaxRequestBytes)  MaxRequestBytes  = vm.RequestBytes;
+                    if (vm.ResponseBytes > MaxResponseBytes) MaxResponseBytes = vm.ResponseBytes;
+                }
             }
             return true;
         }
