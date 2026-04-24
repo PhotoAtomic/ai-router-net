@@ -74,6 +74,58 @@ else
             }
         </div>
 
+        <!-- ── Anthropic request detail ──────────────────────── -->
+        @{
+            var anthropic = AnthropicRequestParser.TryParse(vm.RequestBody);
+        }
+        @if (anthropic is not null)
+        {
+            <div style="@Card">
+                <h3 style="@CardTitle">Request (parsed)</h3>
+
+                @if (anthropic.System is { Count: > 0 })
+                {
+                    <div style="margin-bottom:.75rem;">
+                        <div style="font-size:.75rem; color:#718096; margin-bottom:.25rem;">system</div>
+                        @foreach (var sb in anthropic.System)
+                        {
+                            <pre style="@PreStyle; margin-bottom:.35rem;">@DecodeText(sb.Text ?? string.Empty)</pre>
+                        }
+                    </div>
+                }
+
+                @if (anthropic.Tools is { Count: > 0 })
+                {
+                    <div style="margin-bottom:.75rem;">
+                        <div style="font-size:.75rem; color:#718096; margin-bottom:.25rem;">tools (@anthropic.Tools.Count)</div>
+                        @foreach (var tool in anthropic.Tools)
+                        {
+                            <div style="font-size:.8rem; padding:.25rem 0; border-bottom:1px solid #2d3748;">
+                                <span style="font-family:monospace; color:#90cdf4;">@tool.Name</span>
+                                @if (!string.IsNullOrEmpty(tool.Description))
+                                {
+                                    <span style="color:#a0aec0;"> — @tool.Description</span>
+                                }
+                            </div>
+                        }
+                    </div>
+                }
+
+                @if (anthropic.Messages is { Count: > 0 })
+                {
+                    <div style="font-size:.75rem; color:#718096; margin-bottom:.4rem;">messages (@anthropic.Messages.Count)</div>
+                    @foreach (var msg in anthropic.Messages)
+                    {
+                        var roleColor = msg.Role == "assistant" ? "#90cdf4" : "#68d391";
+                        <div style="margin-bottom:.5rem; border-left:3px solid @roleColor; padding-left:.6rem;">
+                            <div style="font-size:.75rem; color:@roleColor; margin-bottom:.2rem;">@msg.Role</div>
+                            <pre style="@PreStyle; margin:0;">@DecodeText(AnthropicRequestParser.GetMessageText(msg))</pre>
+                        </div>
+                    }
+                }
+            </div>
+        }
+
         <!-- ── Request body ──────────────────────────────────── -->
         <div style="@Card">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:.75rem;">
@@ -120,8 +172,11 @@ else
         _             => $"{bytes/1024.0/1024:F2} MB",
     };
 
-    static string PrettyJson(string raw)
-    {
+    // JsonSerializer.Deserialize already unescapes \uXXXX when parsing the JSON body,
+    // so strings from AnthropicRequestParser are already decoded — just return as-is.
+    static string DecodeText(string s) => s;
+
+    static string PrettyJson(string raw)    {
         try
         {
             var doc = System.Text.Json.JsonDocument.Parse(raw);

@@ -2,6 +2,7 @@
 @page "/dashboard"
 @implements IDisposable
 @inject LogWatcherService Watcher
+@using System.Linq
 
 <h2 style="margin:0 0 1rem; font-size:1.25rem; color:#90cdf4;">Live Request Log</h2>
 
@@ -24,10 +25,17 @@
 
 <!-- ── Table ───────────────────────────────────────────────────── -->
 @{
-    var rows = Filtered;
+    var rows = Filtered.ToList();
     double maxDur  = Watcher.MaxDurationMs;
     long   maxReq  = Watcher.MaxRequestBytes;
     long   maxResp = Watcher.MaxResponseBytes;
+    // timeline helpers
+    var allRows = Watcher.Entries.ToList();
+    long   timelineOriginTicks = allRows.Count > 0 ? allRows.Min(r => r.RequestTimestamp.UtcTicks) : 0;
+    double timelineSpanMs      = allRows.Count > 0
+        ? (allRows.Max(r => r.HasResponse ? r.ResponseTimestamp!.Value.UtcTicks : r.RequestTimestamp.UtcTicks) - timelineOriginTicks) / TimeSpan.TicksPerMillisecond
+        : 1;
+    if (timelineSpanMs < 1) timelineSpanMs = 1;
 }
 
 @if (!rows.Any())
@@ -46,16 +54,26 @@ else
                     <th style="@Th">Rule</th>
                     <th style="@Th">Endpoint</th>
                     <th style="@Th">Status</th>
-                    <th style="@Th">Duration</th>
+                    <th style="@Th">Duration (s)</th>
                     <th style="@Th">Req size</th>
                     <th style="@Th">Resp size</th>
                     <th style="@Th">Request preview</th>
                     <th style="@Th">Response preview</th>
+                    <th style="@Th">Timeline</th>
                 </tr>
             </thead>
             <tbody>
                 @foreach (var vm in rows)
                 {
+                    // timeline bar
+                    double barStartPct = (vm.RequestTimestamp.UtcTicks - timelineOriginTicks) / TimeSpan.TicksPerMillisecond / timelineSpanMs * 100.0;
+                    double barWidthPct = vm.HasResponse
+                        ? vm.DurationMs / timelineSpanMs * 100.0
+                        : 0.5;
+                    barStartPct = Math.Max(0, Math.Min(barStartPct, 99));
+                    barWidthPct = Math.Max(0.5, Math.Min(barWidthPct, 100 - barStartPct));
+                    string barColor = vm.HasResponse ? (vm.StatusCode >= 500 ? "#fc8181" : vm.StatusCode >= 400 ? "#f6e05e" : "#68d391") : "#4a5568";
+
                     <tr style="@RowStyle" @onclick="() => GoDetail(vm)" title="Click for details">
                         <td style="@Td">@vm.RequestTimestamp.LocalDateTime.ToString("HH:mm:ss")</td>
                         <td style="@Td; font-family:monospace;">@vm.Model</td>
@@ -65,7 +83,7 @@ else
                         @if (vm.HasResponse)
                         {
                             <td style="@Td; color:@StatusColor(vm.StatusCode);">@vm.StatusCode</td>
-                            <td style="@Td; color:@HeatColor(vm.DurationMs, maxDur);">@($"{vm.DurationMs:F0} ms")</td>
+                            <td style="@Td; color:@HeatColor(vm.DurationMs, maxDur);">@($"{vm.DurationMs / 1000.0:F3} s")</td>
                             <td style="@Td; color:@HeatColor(vm.RequestBytes, maxReq);">@FormatBytes(vm.RequestBytes)</td>
                             <td style="@Td; color:@HeatColor(vm.ResponseBytes, maxResp);">@FormatBytes(vm.ResponseBytes)</td>
                             <td style="@Td; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#a0aec0;" title="@vm.RequestPreview">@vm.RequestPreview</td>
@@ -80,6 +98,11 @@ else
                             <td style="@Td; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#a0aec0;" title="@vm.RequestPreview">@vm.RequestPreview</td>
                             <td style="@Td; color:#718096;">—</td>
                         }
+                        <td style="@Td; min-width:120px; padding-top:.55rem; padding-bottom:.55rem;">
+                            <div style="position:relative; height:10px; background:#2d3748; border-radius:3px; overflow:hidden;">
+                                <div style="position:absolute; left:@($"{barStartPct:F1}")%; width:@($"{barWidthPct:F1}")%; height:100%; background:@barColor; border-radius:3px;"></div>
+                            </div>
+                        </td>
                     </tr>
                 }
             </tbody>
