@@ -29,7 +29,8 @@ class ProcessManager : IDisposable
         await _lock.WaitAsync(ct);
         try
         {
-            if (IsAlive) return;
+            Console.WriteLine($"[proc:{_label}] EnsureRunningAsync entered. IsAlive={IsAlive}, hasHandle={_process is not null}, wasPreExisting={_wasPreExisting}.");
+            if (IsAlive) { Console.WriteLine($"[proc:{_label}] Already alive (PID {_process!.Id}); skipping start."); return; }
 
             // Clean up any dead handle (only if we owned it)
             if (_process is not null)
@@ -44,7 +45,29 @@ class ProcessManager : IDisposable
             }
 
             // Check if the process is already running on the system.
-            var existing = FindExistingProcess();
+            Console.WriteLine($"[proc:{_label}] Scanning OS for an existing process matching '{_cfg.FileName} {_cfg.Arguments}'…");
+            // The WMI query can occasionally hang (slow/locked WMI service);
+            // run it on a background task with a hard timeout so we never
+            // block EnsureRunningAsync indefinitely. On timeout we proceed as
+            // if no match was found and launch a fresh process.
+            System.Diagnostics.Process? existing;
+            var scanTask = Task.Run(FindExistingProcess);
+            var scanTimeout = TimeSpan.FromSeconds(5);
+            var completed = await Task.WhenAny(scanTask, Task.Delay(scanTimeout, ct));
+            if (completed == scanTask)
+            {
+                existing = await scanTask;
+            }
+            else
+            {
+                Console.WriteLine($"[proc:{_label}] WMI scan exceeded {scanTimeout.TotalSeconds:F0}s — assuming no match and launching a new process. (Background scan still running, will be ignored.)");
+                existing = null;
+                _ = scanTask.ContinueWith(t =>
+                {
+                    if (t.Exception is not null)
+                        Console.WriteLine($"[proc:{_label}] Late WMI scan failed: {t.Exception.GetBaseException().Message}");
+                }, TaskScheduler.Default);
+            }
             if (existing is not null)
             {
                 _process = existing;
@@ -58,7 +81,7 @@ class ProcessManager : IDisposable
 
             // Not found: launch it ourselves.
             _wasPreExisting = false;
-            Console.WriteLine($"[proc:{_label}] Starting: {_cfg.FileName} {_cfg.Arguments}");
+            Console.WriteLine($"[proc:{_label}] No matching pre-existing process found. Launching: {_cfg.FileName} {_cfg.Arguments}");
 
             var psi = new ProcessStartInfo
             {
@@ -149,14 +172,29 @@ class ProcessManager : IDisposable
     {
         var resolvedExe = ResolveExecutablePath(_cfg.FileName);
 
+        // Restrict the WMI query to the executable name to keep it fast and
+        // avoid enumerating every single process on the machine. We escape
+        // backslashes/quotes for WQL.
+        var exeName = Path.GetFileName(resolvedExe ?? _cfg.FileName);
+        if (string.IsNullOrEmpty(exeName)) return null;
+        // If the user passed "pwsh" without extension, WMI's Name column
+        // includes the extension, so we try with .exe appended when missing.
+        if (!exeName.Contains('.', StringComparison.Ordinal))
+            exeName += ".exe";
+        var wqlName = exeName.Replace("\\", "\\\\").Replace("'", "\\'");
+        var query   = $"SELECT ProcessId, ExecutablePath, CommandLine FROM Win32_Process WHERE Name='{wqlName}'";
+
         try
         {
-            using var searcher = new ManagementObjectSearcher(
-                "SELECT ProcessId, ExecutablePath, CommandLine FROM Win32_Process");
-            using var results = searcher.Get();
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            using var searcher = new ManagementObjectSearcher(query);
+            using var results  = searcher.Get();
+            int scanned = 0;
 
-            foreach (ManagementObject mo in results)
+            foreach (ManagementBaseObject moBase in results)
             {
+                using var mo = (ManagementObject)moBase;
+                scanned++;
                 var pid     = Convert.ToInt32(mo["ProcessId"]);
                 var exePath = mo["ExecutablePath"] as string ?? string.Empty;
                 var cmdLine = mo["CommandLine"]    as string ?? string.Empty;
@@ -167,11 +205,14 @@ class ProcessManager : IDisposable
                 try
                 {
                     var proc = System.Diagnostics.Process.GetProcessById(pid);
-                    Console.WriteLine($"[proc:{_label}] Found pre-existing process matching '{_cfg.FileName} {_cfg.Arguments}' (PID {pid}).");
+                    Console.WriteLine($"[proc:{_label}] Found pre-existing process matching '{_cfg.FileName} {_cfg.Arguments}' (PID {pid}) after scanning {scanned} candidate(s) in {sw.ElapsedMilliseconds}ms.");
                     return proc;
                 }
                 catch { /* process exited between query and GetProcessById */ }
             }
+
+            sw.Stop();
+            Console.WriteLine($"[proc:{_label}] WMI scan complete: {scanned} '{exeName}' process(es) inspected, no match (took {sw.ElapsedMilliseconds}ms).");
         }
         catch (Exception ex)
         {

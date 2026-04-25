@@ -51,8 +51,9 @@ class Router : IDisposable
         {
             var procInfo = r.Process is not null
                 ? $"  [process: {r.Process.FileName} {r.Process.Arguments}]"
-                : string.Empty;
-            Console.WriteLine($"         {r.Pattern,-40} → {r.BaseUrl}{procInfo}");
+                : "  [process: <none>]";
+            var mgrInfo = r.ProcessManager is not null ? "  [mgr: ok]" : "  [mgr: <null>]";
+            Console.WriteLine($"         {r.Pattern,-40} → {r.BaseUrl}{procInfo}{mgrInfo}");
         }
     }
 
@@ -132,10 +133,30 @@ class Router : IDisposable
         Console.WriteLine($"[route] {model} → {targetUrl}  (rule: {rule.Pattern})");
         if (!string.IsNullOrEmpty(rule.ForceModel))
             Console.WriteLine($"[route] model overridden: '{model}' → '{rule.ForceModel}'");
+        if (rule.Process is null)
+            Console.WriteLine($"[route] rule '{rule.Pattern}' has NO Process configured (rule.Process == null).");
+        if (rule.ProcessManager is null)
+            Console.WriteLine($"[route] rule '{rule.Pattern}' has NO ProcessManager attached (rule.ProcessManager == null).");
 
         // --- Ensure managed process is running (if configured for this rule) -
+        // We do TWO things here, in this order:
+        //   1. EnsureRunningAsync — guarantees that the OS process exists (or
+        //      gets launched). After this returns, the *process* is alive but
+        //      the upstream HTTP server inside it may not yet be bound to its
+        //      port (e.g. llama-server.exe needs a few seconds before it
+        //      starts listening).
+        //   2. WaitForUpstreamReadyAsync — actively probes {baseUrl}/models
+        //      (with fallback on {baseUrl}) until ANY HTTP response is
+        //      received, which means the server is listening. Without this,
+        //      the very first request after a cold start would hit a
+        //      connection-refused error and return 502 to the client even
+        //      though we just spawned the process correctly.
+        // The probe is cheap when the upstream is already up: the very first
+        // GET succeeds immediately and we move on.
+        using var readinessHttp = CreateHttpClient();
         if (rule.ProcessManager is not null)
         {
+            Console.WriteLine($"[proc] Rule '{rule.Pattern}' has a managed process configured ({rule.Process?.FileName} {rule.Process?.Arguments}). Ensuring it is running…");
             try
             {
                 await rule.ProcessManager.EnsureRunningAsync(ctx.RequestAborted);
@@ -144,6 +165,18 @@ class Router : IDisposable
             {
                 Console.WriteLine($"[error] Failed to start process for rule '{rule.Pattern}': {ex.Message}");
                 await WriteErrorAndLogAsync(res, 503, $"Managed process failed to start: {ex.Message}",
+                    correlationId, stopwatch);
+                return;
+            }
+
+            var readyTimeout = TimeSpan.FromSeconds(60);
+            var ready = await WaitForUpstreamReadyAsync(
+                readinessHttp, rule.BaseUrl, readyTimeout, ctx.RequestAborted);
+            if (!ready)
+            {
+                Console.WriteLine($"[error] Upstream {rule.BaseUrl} did not become ready within {readyTimeout.TotalSeconds:F0}s.");
+                await WriteErrorAndLogAsync(res, 503,
+                    $"Upstream did not become ready within {readyTimeout.TotalSeconds:F0}s after starting the managed process.",
                     correlationId, stopwatch);
                 return;
             }
@@ -185,11 +218,39 @@ class Router : IDisposable
         catch (Exception ex)
         {
             upstreamReq.Dispose();
+            // The upstream rejected the connection (process likely died between
+            // the readiness probe and the send). If we own a ProcessManager,
+            // try once more: ensure-running + readiness probe + single retry.
+            if (rule.ProcessManager is not null)
+            {
+                Console.WriteLine($"[warn] Upstream call failed ({ex.Message}); ensuring process is running and retrying once…");
+                try
+                {
+                    await rule.ProcessManager.EnsureRunningAsync(ctx.RequestAborted);
+                    var retryReady = await WaitForUpstreamReadyAsync(
+                        readinessHttp, rule.BaseUrl, TimeSpan.FromSeconds(60), ctx.RequestAborted);
+                    if (retryReady)
+                    {
+                        upstreamReq = BuildUpstreamRequest();
+                        upstreamRes = await httpClient.SendAsync(
+                            upstreamReq,
+                            HttpCompletionOption.ResponseHeadersRead,
+                            ctx.RequestAborted);
+                        goto upstreamSendDone;
+                    }
+                }
+                catch (Exception retryEx)
+                {
+                    Console.WriteLine($"[error] Retry after ensure+probe failed: {retryEx.Message}");
+                }
+            }
+
             Console.WriteLine($"[error] Upstream call failed: {ex.Message}");
             await WriteErrorAndLogAsync(res, 502, $"Upstream unreachable: {ex.Message}",
                 correlationId, stopwatch);
             return;
         }
+        upstreamSendDone:
 
         // --- llama.cpp model-crash recovery ----------------------------------
         // If the upstream returns 500 and the rule has the recovery flag on,
@@ -490,6 +551,64 @@ class Router : IDisposable
         client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
         return client;
+    }
+
+    // Polls the upstream until ANY HTTP response is received (= the server is
+    // accepting TCP connections and speaking HTTP), or until the timeout
+    // elapses. We deliberately accept any status code here: a 404 / 405 / 500
+    // still proves the server is alive. Only a connection refused / timeout
+    // is treated as "not ready yet".
+    private static async Task<bool> WaitForUpstreamReadyAsync(
+        HttpClient http, string baseUrl, TimeSpan timeout, CancellationToken ct)
+    {
+        baseUrl = baseUrl.TrimEnd('/');
+        // Try /models first (well-known on llama.cpp / OpenAI-compatible servers),
+        // then the bare base URL as a fallback.
+        var probeUrls = new[] { $"{baseUrl}/models", baseUrl };
+
+        var deadline = DateTime.UtcNow + timeout;
+        var delay = TimeSpan.FromMilliseconds(250);
+        var probeTimeout = TimeSpan.FromSeconds(2);
+        bool firstAttempt = true;
+
+        while (DateTime.UtcNow < deadline && !ct.IsCancellationRequested)
+        {
+            foreach (var url in probeUrls)
+            {
+                using var probeCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                probeCts.CancelAfter(probeTimeout);
+                try
+                {
+                    using var req = new HttpRequestMessage(HttpMethod.Get, url);
+                    using var resp = await http.SendAsync(
+                        req, HttpCompletionOption.ResponseHeadersRead, probeCts.Token);
+                    // Any HTTP response means the listener is up.
+                    if (!firstAttempt)
+                        Console.WriteLine($"[ready] Upstream {baseUrl} responded on probe ({(int)resp.StatusCode}).");
+                    return true;
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    return false;
+                }
+                catch
+                {
+                    // Connection refused / DNS / timeout — server not ready yet.
+                }
+            }
+
+            if (firstAttempt)
+            {
+                Console.WriteLine($"[ready] Waiting for upstream {baseUrl} to start accepting connections…");
+                firstAttempt = false;
+            }
+
+            try { await Task.Delay(delay, ct); }
+            catch (OperationCanceledException) { return false; }
+            delay = TimeSpan.FromMilliseconds(Math.Min(delay.TotalMilliseconds * 2, 2000));
+        }
+
+        return false;
     }
 
     private static string? ExtractModel(string json)
