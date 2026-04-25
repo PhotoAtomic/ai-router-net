@@ -192,15 +192,18 @@ public sealed class LogEntryViewModel
             if (entries.Count > 0)
             {
                 var rec = LoggedResponseParser.Reconstruct(entries);
+                var parts = new List<string>();
                 if (!string.IsNullOrEmpty(rec.Text))
-                    return Truncate(rec.Text);
+                    parts.Add(Truncate(rec.Text));
                 if (rec.ToolUses.Count > 0)
                 {
                     var names = string.Join(", ", rec.ToolUses.ConvertAll(t => t.Name ?? "?"));
-                    return Truncate($"[tool_use: {names}]");
+                    parts.Add($"🔨 {names}");
                 }
                 if (!string.IsNullOrEmpty(rec.Thinking))
-                    return Truncate(rec.Thinking);
+                    parts.Add($"💭 {Truncate(rec.Thinking)}");
+                if (parts.Count > 0)
+                    return Truncate(string.Join(" · ", parts));
             }
 
             // Fallback: legacy / unknown shape.
@@ -235,11 +238,53 @@ public sealed class LogEntryViewModel
             return Truncate(content.GetString() ?? string.Empty);
         if (content.ValueKind == JsonValueKind.Array)
         {
+            string? textPreview = null, toolResultPreview = null, toolUsePreview = null, thinkingPreview = null;
             foreach (var block in content.EnumerateArray())
             {
-                if (block.TryGetProperty("text", out var t))
-                    return Truncate(t.GetString() ?? string.Empty);
+                var type = block.TryGetProperty("type", out var tp) ? tp.GetString() : null;
+                switch (type)
+                {
+                    case "text":
+                        if (textPreview is null && block.TryGetProperty("text", out var tv))
+                            textPreview = tv.GetString();
+                        break;
+                    case "tool_result":
+                        if (toolResultPreview is null)
+                        {
+                            var id = block.TryGetProperty("tool_use_id", out var tid) ? (tid.GetString() ?? "") : "";
+                            var resultText = ExtractToolResultText(block);
+                            toolResultPreview = string.IsNullOrEmpty(resultText)
+                                ? $"↳ {id}"
+                                : string.IsNullOrEmpty(id) ? resultText : $"↳ {id}: {resultText}";
+                        }
+                        break;
+                    case "tool_use":
+                        if (toolUsePreview is null)
+                        {
+                            var name = block.TryGetProperty("name", out var nv) ? (nv.GetString() ?? "?") : "?";
+                            toolUsePreview = $"🔨 {name}";
+                        }
+                        break;
+                    case "thinking":
+                        if (thinkingPreview is null && block.TryGetProperty("thinking", out var th))
+                            thinkingPreview = $"💭 {th.GetString()}";
+                        break;
+                }
             }
+            var result = textPreview ?? toolResultPreview ?? toolUsePreview ?? thinkingPreview ?? string.Empty;
+            return Truncate(result);
+        }
+        return string.Empty;
+    }
+
+    private static string ExtractToolResultText(JsonElement block)
+    {
+        if (!block.TryGetProperty("content", out var cv)) return string.Empty;
+        if (cv.ValueKind == JsonValueKind.String) return cv.GetString() ?? string.Empty;
+        if (cv.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var part in cv.EnumerateArray())
+                if (part.TryGetProperty("text", out var pt)) return pt.GetString() ?? string.Empty;
         }
         return string.Empty;
     }
