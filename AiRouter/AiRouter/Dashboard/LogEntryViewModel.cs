@@ -27,6 +27,12 @@ public sealed class LogEntryViewModel
     /// <summary>Parsed metadata from the request body (device_id / session_id / …).</summary>
     public RequestMetadata?          Metadata         { get; private set; }
 
+    /// <summary>Number of messages in the request body.</summary>
+    public int                       MessageCount     { get; private set; }
+
+    /// <summary>Number of tools defined in the request body.</summary>
+    public int                       ToolCount        { get; private set; }
+
     /// <summary>
     /// The identity key used to assign a session color.
     /// Prefers session_id, falls back to device_id, then raw user_id.
@@ -72,6 +78,8 @@ public sealed class LogEntryViewModel
 
         var req = AnthropicRequestParser.TryParse(RequestBody);
         Metadata        = req is not null ? AnthropicRequestParser.ParseMetadata(req) : null;
+        MessageCount    = req?.Messages?.Count ?? 0;
+        ToolCount       = req?.Tools?.Count    ?? 0;
         SessionIdentity = Metadata?.SessionId
                        ?? Metadata?.DeviceId
                        ?? Metadata?.RawUserId

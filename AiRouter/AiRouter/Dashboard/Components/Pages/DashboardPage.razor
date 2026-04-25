@@ -3,6 +3,7 @@
 @implements IDisposable
 @inject LogWatcherService Watcher
 @using System.Linq
+@using System.Threading
 
 <h2 style="margin:0 0 1rem; font-size:1.25rem; color:#90cdf4;">Live Request Log</h2>
 
@@ -76,6 +77,8 @@ else
                     <th style="@Th">Req size</th>
                     <th style="@Th">Resp size</th>
                     <th style="@Th">Request preview</th>
+                    <th style="@Th" title="Messages in request">#msg</th>
+                    <th style="@Th" title="Tools defined in request">#tools</th>
                     <th style="@Th">Response preview</th>
                     <th style="@Th" title="Tool use">🔨</th>
                     <th style="@Th">Timeline</th>
@@ -116,6 +119,8 @@ else
                             <td style="@Td; color:@HeatColor(vm.RequestBytes, maxReq); cursor:pointer;" @onclick="() => GoDetail(vm)">@FormatBytes(vm.RequestBytes)</td>
                             <td style="@Td; color:@HeatColor(vm.ResponseBytes, maxResp); cursor:pointer;" @onclick="() => GoDetail(vm)">@FormatBytes(vm.ResponseBytes)</td>
                             <td style="@Td; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#a0aec0; cursor:pointer;" title="@vm.RequestPreview" @onclick="() => GoDetail(vm)">@vm.RequestPreview</td>
+                            <td style="@Td; text-align:right; font-family:monospace; cursor:pointer;" @onclick="() => GoDetail(vm)">@(vm.MessageCount > 0 ? vm.MessageCount.ToString() : string.Empty)</td>
+                            <td style="@Td; text-align:right; font-family:monospace; cursor:pointer;" @onclick="() => GoDetail(vm)">@(vm.ToolCount > 0 ? vm.ToolCount.ToString() : string.Empty)</td>
                             <td style="@Td; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#a0aec0; cursor:pointer;" title="@vm.ResponsePreview" @onclick="() => GoDetail(vm)">@vm.ResponsePreview</td>
                             <td style="@Td; text-align:center; cursor:pointer;" @onclick="() => GoDetail(vm)" title="@(vm.HasToolUse ? "Tool use" : string.Empty)">@(vm.HasToolUse ? "🔨" : string.Empty)</td>
                         }
@@ -126,6 +131,8 @@ else
                             <td style="@Td; color:@HeatColor(vm.RequestBytes, maxReq); cursor:pointer;" @onclick="() => GoDetail(vm)">@FormatBytes(vm.RequestBytes)</td>
                             <td style="@Td; color:#718096; cursor:pointer;" @onclick="() => GoDetail(vm)">—</td>
                             <td style="@Td; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#a0aec0; cursor:pointer;" title="@vm.RequestPreview" @onclick="() => GoDetail(vm)">@vm.RequestPreview</td>
+                            <td style="@Td; text-align:right; font-family:monospace; cursor:pointer;" @onclick="() => GoDetail(vm)">@(vm.MessageCount > 0 ? vm.MessageCount.ToString() : string.Empty)</td>
+                            <td style="@Td; text-align:right; font-family:monospace; cursor:pointer;" @onclick="() => GoDetail(vm)">@(vm.ToolCount > 0 ? vm.ToolCount.ToString() : string.Empty)</td>
                             <td style="@Td; color:#718096; cursor:pointer;" @onclick="() => GoDetail(vm)">—</td>
                             <td style="@Td;" @onclick="() => GoDetail(vm)"></td>
                         }
@@ -138,6 +145,38 @@ else
                     </tr>
                 }
             </tbody>
+            @{
+                bool anyInFlight = rows.Any(r => !r.HasResponse);
+                double totalDurMs  = rows.Sum(r => r.HasResponse
+                    ? r.DurationMs
+                    : (DateTimeOffset.UtcNow - r.RequestTimestamp).TotalMilliseconds);
+                long totalReqBytes  = rows.Sum(r => r.RequestBytes);
+                long totalRespBytes = rows.Sum(r => r.ResponseBytes);
+                int  sessionCount   = rows.Select(r => r.SessionIdentity)
+                                         .Where(s => !string.IsNullOrEmpty(s))
+                                         .Distinct()
+                                         .Count();
+            }
+            <tfoot>
+                <tr style="background:#1a202c; font-weight:600; color:#90cdf4; border-top:2px solid #2d3748;">
+                    <td style="@Td"></td>
+                    <td style="@Td; font-size:.75rem; color:#718096;">Totals</td>
+                    <td style="@Td"></td>
+                    <td style="@Td"></td>
+                    <td style="@Td"></td>
+                    <td style="@Td"></td>
+                    <td style="@Td"></td>
+                    <td style="@Td; color:@(anyInFlight ? "#f6e05e" : "#90cdf4");" title="@(anyInFlight ? "Live – includes in-flight requests" : "Completed requests only")">@($"{totalDurMs / 1000.0:F3} s")@(anyInFlight ? " ⚡" : string.Empty)</td>
+                    <td style="@Td">@FormatBytes(totalReqBytes)</td>
+                    <td style="@Td">@FormatBytes(totalRespBytes)</td>
+                    <td style="@Td"></td>
+                    <td style="@Td"></td>
+                    <td style="@Td"></td>
+                    <td style="@Td"></td>
+                    <td style="@Td"></td>
+                    <td style="@Td; color:#a0aec0; font-size:.75rem;">@(sessionCount > 0 ? $"{sessionCount} session{(sessionCount == 1 ? "" : "s")}" : string.Empty)</td>
+                </tr>
+            </tfoot>
         </table>
     </div>
     <p style="color:#718096; font-size:.8rem; margin-top:.5rem;">
@@ -154,16 +193,24 @@ else
     string _filterRule     = string.Empty;
     string _filterEndpoint = string.Empty;
 
+    Timer? _liveTimer;
     readonly HashSet<Guid> _selected = new();
     Microsoft.AspNetCore.Components.ElementReference _tableContainer;
+
     protected override void OnInitialized()
-        => Watcher.Changed += OnChanged;
+    {
+        Watcher.Changed += OnChanged;
+        _liveTimer = new Timer(_ => InvokeAsync(StateHasChanged), null, 500, 500);
+    }
 
     void OnChanged()
         => InvokeAsync(StateHasChanged);
 
     public void Dispose()
-        => Watcher.Changed -= OnChanged;
+    {
+        Watcher.Changed -= OnChanged;
+        _liveTimer?.Dispose();
+    }
 
     void ClearFilters()
     {
