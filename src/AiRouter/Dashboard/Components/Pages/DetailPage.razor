@@ -93,9 +93,9 @@ else
                 @foreach (var msg in anthropic.Messages)
                 {
                     var roleColor = msg.Role == "assistant" ? "#90cdf4" : "#68d391";
-                    <div style="margin-bottom:.5rem; border-left:3px solid @roleColor; padding-left:.6rem;">
-                        <div style="font-size:.75rem; color:@roleColor; margin-bottom:.2rem;">@msg.Role</div>
-                        <pre style="@PreStyle; margin:0;">@DecodeText(AnthropicRequestParser.GetMessageText(msg))</pre>
+                    <div style="margin-bottom:.75rem; border-left:3px solid @roleColor; padding-left:.75rem;">
+                        <div style="font-size:.75rem; color:@roleColor; margin-bottom:.35rem; font-weight:600;">@msg.Role</div>
+                        @RenderContentBlocks(msg.Content)
                     </div>
                 }
             </div>
@@ -155,7 +155,7 @@ else
                                         @if (!string.IsNullOrEmpty(tu.Id))
                                         { <span style="font-family:monospace; font-size:.7rem; color:#718096;">@tu.Id</span> }
                                     </div>
-                                    <pre style="@PreStyle; max-height:280px; margin:0;">@tu.Input</pre>
+                                    @RenderToolUseParams(tu.Input)
                                 </div>
                             }
                         }
@@ -299,6 +299,153 @@ else
             return System.Text.Json.JsonSerializer.Serialize(doc, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
         }
         catch { return raw; }
+    }
+
+    // ── content-block renderers ──────────────────────────────
+
+    RenderFragment RenderContentBlocks(System.Text.Json.JsonElement content)
+    {
+        return __builder =>
+        {
+            if (content.ValueKind == System.Text.Json.JsonValueKind.String)
+            {
+                var text = content.GetString() ?? string.Empty;
+                __builder.OpenElement(0, "pre");
+                __builder.AddAttribute(1, "style", PreStyle + " margin:0;");
+                __builder.AddContent(2, text);
+                __builder.CloseElement();
+                return;
+            }
+            if (content.ValueKind != System.Text.Json.JsonValueKind.Array) return;
+
+            int seq = 0;
+            foreach (var block in content.EnumerateArray())
+            {
+                var type = block.TryGetProperty("type", out var t) ? (t.GetString() ?? "") : "";
+
+                if (type == "text")
+                {
+                    var txt = block.TryGetProperty("text", out var tv) ? (tv.GetString() ?? "") : "";
+                    __builder.OpenElement(seq++, "div");
+                    __builder.AddAttribute(seq++, "style", "margin-bottom:.4rem;");
+                    __builder.OpenElement(seq++, "div");
+                    __builder.AddAttribute(seq++, "style", "font-size:.7rem; color:#90cdf4; margin-bottom:.15rem;");
+                    __builder.AddContent(seq++, "text");
+                    __builder.CloseElement();
+                    __builder.OpenElement(seq++, "pre");
+                    __builder.AddAttribute(seq++, "style", PreStyle + " margin:0;");
+                    __builder.AddContent(seq++, txt);
+                    __builder.CloseElement();
+                    __builder.CloseElement();
+                }
+                else if (type == "thinking")
+                {
+                    var thinking = block.TryGetProperty("thinking", out var th) ? (th.GetString() ?? "") : "";
+                    __builder.OpenElement(seq++, "div");
+                    __builder.AddAttribute(seq++, "style", "margin-bottom:.4rem;");
+                    __builder.OpenElement(seq++, "div");
+                    __builder.AddAttribute(seq++, "style", "font-size:.7rem; color:#a78bfa; margin-bottom:.15rem;");
+                    __builder.AddContent(seq++, "thinking");
+                    __builder.CloseElement();
+                    __builder.OpenElement(seq++, "pre");
+                    __builder.AddAttribute(seq++, "style", PreStyle + " max-height:240px; margin:0;");
+                    __builder.AddContent(seq++, thinking);
+                    __builder.CloseElement();
+                    __builder.CloseElement();
+                }
+                else if (type == "tool_use")
+                {
+                    var name  = block.TryGetProperty("name",  out var nv) ? (nv.GetString() ?? "?") : "?";
+                    var id    = block.TryGetProperty("id",    out var iv) ? (iv.GetString() ?? "") : "";
+                    var input = block.TryGetProperty("input", out var inp) ? PrettyJson(inp.GetRawText()) : "";
+
+                    __builder.OpenElement(seq++, "div");
+                    __builder.AddAttribute(seq++, "style", "margin-bottom:.4rem;");
+                    __builder.OpenElement(seq++, "div");
+                    __builder.AddAttribute(seq++, "style", "font-size:.7rem; color:#f6ad55; margin-bottom:.15rem;");
+                    __builder.AddContent(seq++, "tool_use");
+                    __builder.CloseElement();
+                    __builder.OpenElement(seq++, "div");
+                    __builder.AddAttribute(seq++, "style", "border:1px solid #2d3748; border-radius:6px; padding:.5rem .6rem; background:#171923;");
+                    // name + id header
+                    __builder.OpenElement(seq++, "div");
+                    __builder.AddAttribute(seq++, "style", "display:flex; gap:.6rem; align-items:baseline; margin-bottom:.3rem;");
+                    __builder.OpenElement(seq++, "span");
+                    __builder.AddAttribute(seq++, "style", "font-family:monospace; color:#f6ad55; font-weight:600;");
+                    __builder.AddContent(seq++, name);
+                    __builder.CloseElement();
+                    if (!string.IsNullOrEmpty(id))
+                    {
+                        __builder.OpenElement(seq++, "span");
+                        __builder.AddAttribute(seq++, "style", "font-family:monospace; font-size:.7rem; color:#718096;");
+                        __builder.AddContent(seq++, id);
+                        __builder.CloseElement();
+                    }
+                    __builder.CloseElement();
+                    // params
+                    __builder.AddContent(seq++, RenderToolUseParams(input));
+                    __builder.CloseElement();
+                    __builder.CloseElement();
+                }
+                else
+                {
+                    // unknown type — collapsed grey block
+                    var raw = block.GetRawText();
+                    __builder.OpenElement(seq++, "details");
+                    __builder.AddAttribute(seq++, "style", "margin-bottom:.4rem;");
+                    __builder.OpenElement(seq++, "summary");
+                    __builder.AddAttribute(seq++, "style", "cursor:pointer; font-size:.7rem; color:#4a5568; font-family:monospace;");
+                    __builder.AddContent(seq++, string.IsNullOrEmpty(type) ? "unknown block" : type);
+                    __builder.CloseElement();
+                    __builder.OpenElement(seq++, "pre");
+                    __builder.AddAttribute(seq++, "style", "background:#171923; border:1px solid #2d3748; border-radius:6px; padding:.75rem; overflow:auto; max-height:300px; font-size:.75rem; line-height:1.5; color:#4a5568; white-space:pre-wrap; word-break:break-all; margin:.25rem 0 0;");
+                    __builder.AddContent(seq++, PrettyJson(raw));
+                    __builder.CloseElement();
+                    __builder.CloseElement();
+                }
+            }
+        };
+    }
+
+    RenderFragment RenderToolUseParams(string inputJson)
+    {
+        return __builder =>
+        {
+            int seq = 0;
+            try
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(inputJson);
+                var root = doc.RootElement;
+                if (root.ValueKind == System.Text.Json.JsonValueKind.Object)
+                {
+                    foreach (var prop in root.EnumerateObject())
+                    {
+                        var valueStr = prop.Value.ValueKind == System.Text.Json.JsonValueKind.String
+                            ? (prop.Value.GetString() ?? "")
+                            : PrettyJson(prop.Value.GetRawText());
+
+                        __builder.OpenElement(seq++, "div");
+                        __builder.AddAttribute(seq++, "style", "display:flex; gap:.5rem; align-items:flex-start; margin-bottom:.3rem; font-size:.8rem;");
+                        __builder.OpenElement(seq++, "span");
+                        __builder.AddAttribute(seq++, "style", "font-family:monospace; color:#f6ad55; font-weight:600; white-space:nowrap; flex-shrink:0;");
+                        __builder.AddContent(seq++, prop.Name);
+                        __builder.CloseElement();
+                        __builder.OpenElement(seq++, "div");
+                        __builder.AddAttribute(seq++, "style", "background:#0d1117; border:1px solid #2d3748; border-radius:4px; padding:.4rem .5rem; overflow:auto; max-height:220px; font-family:monospace; font-size:.75rem; color:#e2e8f0; white-space:pre-wrap; word-break:break-all; flex:1;");
+                        __builder.AddContent(seq++, valueStr);
+                        __builder.CloseElement();
+                        __builder.CloseElement();
+                    }
+                    return;
+                }
+            }
+            catch { }
+            // fallback: show as plain pre
+            __builder.OpenElement(seq++, "pre");
+            __builder.AddAttribute(seq++, "style", PreStyle + " max-height:280px; margin:0;");
+            __builder.AddContent(seq++, inputJson);
+            __builder.CloseElement();
+        };
     }
 
     // ── inline styles ────────────────────────────────────────
