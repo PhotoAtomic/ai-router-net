@@ -89,15 +89,19 @@ else
         @if (anthropic?.Messages is { Count: > 0 })
         {
             <div style="@Card">
-                <h3 style="@CardTitle">Messages (@anthropic.Messages.Count)</h3>
-                @foreach (var msg in anthropic.Messages)
-                {
-                    var roleColor = msg.Role == "assistant" ? "#90cdf4" : "#68d391";
-                    <div style="margin-bottom:.75rem; border-left:3px solid @roleColor; padding-left:.75rem;">
-                        <div style="font-size:.75rem; color:@roleColor; margin-bottom:.35rem; font-weight:600;">@msg.Role</div>
-                        @RenderContentBlocks(msg.Content)
-                    </div>
-                }
+                <details open style="margin:0;">
+                    <summary style="cursor:pointer; list-style:revert; margin:0 0 .75rem; font-size:1rem; color:#90cdf4; font-weight:600;">
+                        Messages (@anthropic.Messages.Count)
+                    </summary>
+                    @foreach (var msg in anthropic.Messages)
+                    {
+                        var roleColor = msg.Role == "assistant" ? "#90cdf4" : "#68d391";
+                        <div style="margin-bottom:.75rem; border-left:3px solid @roleColor; padding-left:.75rem;">
+                            <div style="font-size:.75rem; color:@roleColor; margin-bottom:.35rem; font-weight:600;">@msg.Role</div>
+                            @RenderContentBlocks(msg.Content)
+                        </div>
+                    }
+                </details>
             </div>
         }
 
@@ -350,6 +354,73 @@ else
                     __builder.OpenElement(seq++, "pre");
                     __builder.AddAttribute(seq++, "style", PreStyle + " max-height:240px; margin:0;");
                     __builder.AddContent(seq++, thinking);
+                    __builder.CloseElement();
+                    __builder.CloseElement();
+                }
+                else if (type == "tool_result")
+                {
+                    var toolUseId = block.TryGetProperty("tool_use_id", out var tuid) ? (tuid.GetString() ?? "") : "";
+                    var isError   = block.TryGetProperty("is_error", out var ie) && ie.ValueKind == System.Text.Json.JsonValueKind.True;
+                    string resultText;
+                    if (block.TryGetProperty("content", out var cv))
+                    {
+                        if (cv.ValueKind == System.Text.Json.JsonValueKind.String)
+                        {
+                            resultText = cv.GetString() ?? "";
+                        }
+                        else if (cv.ValueKind == System.Text.Json.JsonValueKind.Array)
+                        {
+                            var sb = new System.Text.StringBuilder();
+                            foreach (var part in cv.EnumerateArray())
+                            {
+                                if (part.TryGetProperty("text", out var pt))
+                                {
+                                    if (sb.Length > 0) sb.Append('\n');
+                                    sb.Append(pt.GetString());
+                                }
+                            }
+                            resultText = sb.Length > 0 ? sb.ToString() : PrettyJson(cv.GetRawText());
+                        }
+                        else
+                        {
+                            resultText = PrettyJson(cv.GetRawText());
+                        }
+                    }
+                    else { resultText = ""; }
+
+                    // ochre yellow palette — distinct from tool_use orange (#f6ad55)
+                    var ochre  = isError ? "#fc8181" : "#d69e2e";
+                    var ochreBg = "#1f1a0d";
+                    var ochreBorder = "#5c4a17";
+
+                    __builder.OpenElement(seq++, "div");
+                    __builder.AddAttribute(seq++, "style", "margin-bottom:.4rem;");
+                    __builder.OpenElement(seq++, "div");
+                    __builder.AddAttribute(seq++, "style", $"font-size:.7rem; color:{ochre}; margin-bottom:.15rem;");
+                    __builder.AddContent(seq++, isError ? "tool_result (error)" : "tool_result");
+                    __builder.CloseElement();
+                    __builder.OpenElement(seq++, "div");
+                    __builder.AddAttribute(seq++, "style", $"border:1px solid {ochreBorder}; border-radius:6px; padding:.5rem .6rem; background:{ochreBg};");
+                    // header: tool_use_id reference
+                    if (!string.IsNullOrEmpty(toolUseId))
+                    {
+                        __builder.OpenElement(seq++, "div");
+                        __builder.AddAttribute(seq++, "style", "display:flex; gap:.5rem; align-items:baseline; margin-bottom:.3rem; font-size:.7rem;");
+                        __builder.OpenElement(seq++, "span");
+                        __builder.AddAttribute(seq++, "style", "color:#a0aec0;");
+                        __builder.AddContent(seq++, "↳ tool_use_id");
+                        __builder.CloseElement();
+                        __builder.OpenElement(seq++, "span");
+                        __builder.AddAttribute(seq++, "style", $"font-family:monospace; color:{ochre};");
+                        __builder.AddContent(seq++, toolUseId);
+                        __builder.CloseElement();
+                        __builder.CloseElement();
+                    }
+                    // body
+                    __builder.OpenElement(seq++, "pre");
+                    __builder.AddAttribute(seq++, "style", $"background:#0d1117; border:1px solid {ochreBorder}; border-radius:4px; padding:.5rem .6rem; overflow:auto; max-height:280px; font-family:monospace; font-size:.75rem; color:#e2e8f0; white-space:pre-wrap; word-break:break-all; margin:0;");
+                    __builder.AddContent(seq++, resultText);
+                    __builder.CloseElement();
                     __builder.CloseElement();
                     __builder.CloseElement();
                 }
