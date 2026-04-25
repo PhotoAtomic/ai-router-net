@@ -81,6 +81,7 @@ else
                     <th style="@Th" title="Tools defined in request">#tools</th>
                     <th style="@Th">Response preview</th>
                     <th style="@Th" title="Tool use">🔨</th>
+                    <th style="@Th" title="Llama.cpp model recovery was attempted">🛟</th>
                     <th style="@Th">Timeline</th>
                 </tr>
             </thead>
@@ -123,6 +124,7 @@ else
                             <td style="@Td; text-align:right; font-family:monospace; cursor:pointer;" @onclick="() => GoDetail(vm)">@(vm.ToolCount > 0 ? vm.ToolCount.ToString() : string.Empty)</td>
                             <td style="@Td; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#a0aec0; cursor:pointer;" title="@vm.ResponsePreview" @onclick="() => GoDetail(vm)">@vm.ResponsePreview</td>
                             <td style="@Td; text-align:center; cursor:pointer;" @onclick="() => GoDetail(vm)" title="@(vm.HasToolUse ? "Tool use" : string.Empty)">@(vm.HasToolUse ? "🔨" : string.Empty)</td>
+                            <td style="@Td; text-align:center; cursor:pointer; color:#f6ad55;" @onclick="() => GoDetail(vm)" title="@(vm.HasRecovery ? string.Join("\n", vm.RecoveryAttempts) : string.Empty)">@(vm.HasRecovery ? "🛟" : string.Empty)</td>
                         }
                         else
                         {
@@ -134,6 +136,7 @@ else
                             <td style="@Td; text-align:right; font-family:monospace; cursor:pointer;" @onclick="() => GoDetail(vm)">@(vm.MessageCount > 0 ? vm.MessageCount.ToString() : string.Empty)</td>
                             <td style="@Td; text-align:right; font-family:monospace; cursor:pointer;" @onclick="() => GoDetail(vm)">@(vm.ToolCount > 0 ? vm.ToolCount.ToString() : string.Empty)</td>
                             <td style="@Td; color:#718096; cursor:pointer;" @onclick="() => GoDetail(vm)">—</td>
+                            <td style="@Td;" @onclick="() => GoDetail(vm)"></td>
                             <td style="@Td;" @onclick="() => GoDetail(vm)"></td>
                         }
                         <td style="@Td; min-width:120px; padding-top:.55rem; padding-bottom:.55rem; cursor:pointer;" @onclick="() => GoDetail(vm)">
@@ -169,6 +172,7 @@ else
                     <td style="@Td; color:@(anyInFlight ? "#f6e05e" : "#90cdf4");" title="@(anyInFlight ? "Live – includes in-flight requests" : "Completed requests only")">@($"{totalDurMs / 1000.0:F3} s")@(anyInFlight ? " ⚡" : string.Empty)</td>
                     <td style="@Td">@FormatBytes(totalReqBytes)</td>
                     <td style="@Td">@FormatBytes(totalRespBytes)</td>
+                    <td style="@Td"></td>
                     <td style="@Td"></td>
                     <td style="@Td"></td>
                     <td style="@Td"></td>

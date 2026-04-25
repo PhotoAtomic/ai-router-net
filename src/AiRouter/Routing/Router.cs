@@ -149,31 +149,32 @@ class Router : IDisposable
             }
         }
 
-        // --- Build upstream request ------------------------------------------
-        using var upstreamReq = new HttpRequestMessage(HttpMethod.Post, targetUrl);
-        upstreamReq.Content = new StringContent(body, Encoding.UTF8, "application/json");
-
-        foreach (var (name, values) in req.Headers)
+        // --- Build upstream request (factory: reusable for replay) -----------
+        HttpRequestMessage BuildUpstreamRequest()
         {
-            if (SkippedRequestHeaders.Contains(name)) continue;
+            var msg = new HttpRequestMessage(HttpMethod.Post, targetUrl);
+            msg.Content = new StringContent(body, Encoding.UTF8, "application/json");
 
-            var nameLower = name.ToLowerInvariant();
+            foreach (var (name, values) in req.Headers)
+            {
+                if (SkippedRequestHeaders.Contains(name)) continue;
+                var nameLower = name.ToLowerInvariant();
+                if (nameLower == "x-api-key" || nameLower == "authorization") continue;
+                if (nameLower.StartsWith("content-")) continue;
 
-            if (nameLower == "x-api-key" || nameLower == "authorization")
-                continue;
+                try { msg.Headers.TryAddWithoutValidation(name, (IEnumerable<string>)values); }
+                catch { /* ignore malformed headers */ }
+            }
 
-            if (nameLower.StartsWith("content-"))
-                continue;
-
-            try { upstreamReq.Headers.TryAddWithoutValidation(name, (IEnumerable<string>)values); }
-            catch { /* ignore malformed headers */ }
+            SetAuthHeader(msg, rule.BaseUrl, snap);
+            return msg;
         }
-
-        SetAuthHeader(upstreamReq, rule.BaseUrl, snap);
 
         // --- Send (streaming-aware) ------------------------------------------
         using var httpClient = CreateHttpClient();
+        HttpRequestMessage upstreamReq = BuildUpstreamRequest();
         HttpResponseMessage upstreamRes;
+        List<string>? recoveryAttempts = null;
         try
         {
             upstreamRes = await httpClient.SendAsync(
@@ -183,10 +184,98 @@ class Router : IDisposable
         }
         catch (Exception ex)
         {
+            upstreamReq.Dispose();
             Console.WriteLine($"[error] Upstream call failed: {ex.Message}");
             await WriteErrorAndLogAsync(res, 502, $"Upstream unreachable: {ex.Message}",
                 correlationId, stopwatch);
             return;
+        }
+
+        // --- llama.cpp model-crash recovery ----------------------------------
+        // If the upstream returns 500 and the rule has the recovery flag on,
+        // try to unload + reload the target model on llama.cpp and replay the
+        // request transparently (up to 10 attempts with exponential backoff).
+        if ((int)upstreamRes.StatusCode == 500 && rule.EnableLLamaCppModelRecover)
+        {
+            recoveryAttempts = new List<string>();
+            var modelToRecover = !string.IsNullOrEmpty(rule.ForceModel) ? rule.ForceModel! : model;
+            recoveryAttempts.Add($"Upstream returned 500 for model '{modelToRecover}'. Starting llama.cpp model recovery.");
+            Console.WriteLine($"[recover] {modelToRecover}: upstream 500 → attempting llama.cpp model recovery…");
+
+            // Drain & dispose the failed response body so we can reissue.
+            try { _ = await upstreamRes.Content.ReadAsByteArrayAsync(ctx.RequestAborted); } catch { }
+            var initialFailedResponse = upstreamRes;
+            upstreamReq.Dispose();
+
+            var postLoadDelay = rule.Process is not null
+                ? TimeSpan.FromSeconds(rule.Process.StartupDelaySeconds)
+                : TimeSpan.FromSeconds(2);
+
+            var recovery = new LlamaCppRecoveryService(httpClient);
+            var outcome = await recovery.TryRecoverAsync(
+                rule.BaseUrl, modelToRecover, postLoadDelay, recoveryAttempts, ctx.RequestAborted);
+
+            if (outcome == RecoveryOutcome.Recovered)
+            {
+                // Replay the original request: cold model can take a while.
+                bool replayed = false;
+                var delay = TimeSpan.FromSeconds(1);
+                const int replayAttempts = 10;
+                for (int i = 1; i <= replayAttempts; i++)
+                {
+                    HttpRequestMessage replayReq = BuildUpstreamRequest();
+                    HttpResponseMessage? replayRes = null;
+                    try
+                    {
+                        replayRes = await httpClient.SendAsync(
+                            replayReq, HttpCompletionOption.ResponseHeadersRead, ctx.RequestAborted);
+                    }
+                    catch (Exception ex)
+                    {
+                        recoveryAttempts.Add($"replay {i}/{replayAttempts} threw: {ex.Message}");
+                        replayReq.Dispose();
+                    }
+
+                    if (replayRes is not null)
+                    {
+                        if ((int)replayRes.StatusCode != 500)
+                        {
+                            recoveryAttempts.Add($"replay {i}/{replayAttempts} → status {(int)replayRes.StatusCode}, accepting.");
+                            initialFailedResponse.Dispose();
+                            upstreamReq = replayReq;
+                            upstreamRes = replayRes;
+                            replayed = true;
+                            break;
+                        }
+                        recoveryAttempts.Add($"replay {i}/{replayAttempts} → 500.");
+                        try { _ = await replayRes.Content.ReadAsByteArrayAsync(ctx.RequestAborted); } catch { }
+                        replayRes.Dispose();
+                        replayReq.Dispose();
+                    }
+
+                    if (i < replayAttempts)
+                    {
+                        try { await Task.Delay(delay, ctx.RequestAborted); }
+                        catch (OperationCanceledException) { break; }
+                        delay = TimeSpan.FromMilliseconds(Math.Min(delay.TotalMilliseconds * 2, 30_000));
+                    }
+                }
+
+                if (!replayed)
+                {
+                    recoveryAttempts.Add("All replay attempts exhausted; surfacing original 500 to client.");
+                    Console.WriteLine($"[recover] {modelToRecover}: replay attempts exhausted, returning original 500.");
+                    upstreamReq = BuildUpstreamRequest(); // dummy holder to keep using-pattern below clean
+                    upstreamRes = initialFailedResponse;
+                }
+            }
+            else
+            {
+                recoveryAttempts.Add($"Recovery outcome: {outcome}. Surfacing original 500 to client.");
+                Console.WriteLine($"[recover] {modelToRecover}: recovery {outcome}, returning original 500.");
+                upstreamReq = BuildUpstreamRequest();
+                upstreamRes = initialFailedResponse;
+            }
         }
 
         // --- Copy response headers -------------------------------------------
@@ -253,7 +342,11 @@ class Router : IDisposable
             stopwatch.Elapsed.TotalMilliseconds,
             responseSizeBytes,
             responseHeaders,
-            loggedResponseBody);
+            loggedResponseBody,
+            recoveryAttempts);
+
+        upstreamReq.Dispose();
+        upstreamRes.Dispose();
     }
 
     // -------------------------------------------------------------------------
@@ -290,7 +383,8 @@ class Router : IDisposable
         double durationMs,
         long responseSizeBytes,
         Dictionary<string, string> responseHeaders,
-        string responseBody)
+        string responseBody,
+        List<string>? recoveryAttempts = null)
     {
         if (_logger is null) return Task.CompletedTask;
         var entry = new LogEntry(
@@ -301,7 +395,8 @@ class Router : IDisposable
             DurationMs:        durationMs,
             ResponseSizeBytes: responseSizeBytes,
             ResponseHeaders:   responseHeaders,
-            ResponseBody:      responseBody);
+            ResponseBody:      responseBody,
+            RecoveryAttempts:  recoveryAttempts is { Count: > 0 } ? recoveryAttempts : null);
         return _logger.LogAsync(entry);
     }
 

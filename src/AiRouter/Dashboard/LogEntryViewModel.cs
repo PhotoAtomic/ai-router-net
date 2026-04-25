@@ -55,6 +55,17 @@ public sealed class LogEntryViewModel
     /// <summary>True when the response contains at least one tool_use block.</summary>
     public bool                      HasToolUse        { get; private set; }
 
+    /// <summary>
+    /// Diagnostic lines describing every llama.cpp model-recovery attempt
+    /// performed for this transaction. Non-empty means the upstream initially
+    /// returned a 500 and the router tried to recover (and may or may not
+    /// have succeeded — the final <see cref="StatusCode"/> tells the rest).
+    /// </summary>
+    public IReadOnlyList<string>     RecoveryAttempts  { get; private set; } = Array.Empty<string>();
+
+    /// <summary>True when at least one recovery attempt was logged.</summary>
+    public bool                      HasRecovery       => RecoveryAttempts.Count > 0;
+
     // -------------------------------------------------------------------------
 
     public static LogEntryViewModel FromRequest(LogEntry e)
@@ -98,6 +109,9 @@ public sealed class LogEntryViewModel
         ResponseBody      = e.ResponseBody ?? string.Empty;
         ResponsePreview   = ExtractResponsePreview(ResponseBody);
         HasToolUse        = DetectToolUse(ResponseBody);
+        RecoveryAttempts  = e.RecoveryAttempts is { Count: > 0 }
+                            ? e.RecoveryAttempts.ToArray()
+                            : Array.Empty<string>();
     }
 
     // -------------------------------------------------------------------------

@@ -10,4 +10,10 @@ class RoutingRuleConfig
     public string BaseUrl { get; set; } = string.Empty;
     public string? ForceModel { get; set; }
     public ProcessConfig? Process { get; set; }
+
+    // When true, on a 500 response from the upstream the router will try to
+    // recover by calling llama.cpp's /models endpoint to unload + reload the
+    // target model (the one the request would actually be sent with, i.e.
+    // ForceModel if set, else the requested model), then replay the request.
+    public bool EnableLLamaCppModelRecover { get; set; }
 }

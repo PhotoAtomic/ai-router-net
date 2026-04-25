@@ -28,5 +28,12 @@ public record LogEntry(
     double?                      DurationMs        = null,
     long?                        ResponseSizeBytes = null,
     Dictionary<string, string>?  ResponseHeaders   = null,
-    string?                      ResponseBody      = null
+    string?                      ResponseBody      = null,
+
+    // ---- Recovery diagnostics (Response entries only) ----
+    // Free-form lines describing every recovery attempt the router performed
+    // because the upstream initially returned a 500. The request may still
+    // have eventually succeeded — these lines exist purely to surface the
+    // transient failure in the dashboard.
+    List<string>?                RecoveryAttempts  = null
 );

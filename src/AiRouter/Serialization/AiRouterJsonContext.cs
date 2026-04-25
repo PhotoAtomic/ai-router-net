@@ -8,6 +8,7 @@ namespace AiRouter.Serialization;
 [JsonSerializable(typeof(LogEntryType))]
 [JsonSerializable(typeof(ProxyErrorResponse))]
 [JsonSerializable(typeof(Dictionary<string, string>))]
+[JsonSerializable(typeof(List<string>))]
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
     WriteIndented = false,

@@ -49,6 +49,20 @@ else
             var anthropic = AnthropicRequestParser.TryParse(vm.RequestBody);
         }
 
+        <!-- ── Llama.cpp model recovery ──────────────────────── -->
+        @if (vm.HasRecovery)
+        {
+            <div style="@Card; border-left:4px solid #f6ad55;">
+                <h3 style="@CardTitle">🛟 Llama.cpp model recovery</h3>
+                <p style="margin:0 0 .5rem; color:#a0aec0; font-size:.8rem;">
+                    The upstream initially returned <strong>500</strong>. The router attempted to
+                    unload + reload the model on llama.cpp and replay the request.
+                    Final status: <strong style="color:@(vm.StatusCode is >= 200 and < 300 ? "#68d391" : "#fc8181");">@(vm.HasResponse ? vm.StatusCode.ToString() : "—")</strong>.
+                </p>
+                <pre style="@PreStyle; max-height:320px;">@string.Join('\n', vm.RecoveryAttempts)</pre>
+            </div>
+        }
+
         <!-- ── Session metadata ──────────────────────────────── -->
         @if (vm.Metadata is { } meta)
         {

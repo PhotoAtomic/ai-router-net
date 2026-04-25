@@ -18,6 +18,7 @@ class RoutingRule
     public string BaseUrl             => Config.BaseUrl;
     public string? ForceModel         => Config.ForceModel;
     public ProcessConfig? Process     => Config.Process;
+    public bool EnableLLamaCppModelRecover => Config.EnableLLamaCppModelRecover;
     public Regex CompiledRegex        { get; }
     public ProcessManager? ProcessManager { get; }
 }
