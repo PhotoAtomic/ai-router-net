@@ -16,4 +16,8 @@ class RoutingRuleConfig
     // target model (the one the request would actually be sent with, i.e.
     // ForceModel if set, else the requested model), then replay the request.
     public bool EnableLLamaCppModelRecover { get; set; }
+
+    // When true, the dashboard will treat BaseUrl as a llama.cpp server and
+    // display currently-loaded models with the ability to unload them.
+    public bool IsLLamaCpp { get; set; }
 }

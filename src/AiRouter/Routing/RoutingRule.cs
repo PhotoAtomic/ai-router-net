@@ -19,6 +19,7 @@ class RoutingRule
     public string? ForceModel         => Config.ForceModel;
     public ProcessConfig? Process     => Config.Process;
     public bool EnableLLamaCppModelRecover => Config.EnableLLamaCppModelRecover;
+    public bool IsLLamaCpp             => Config.IsLLamaCpp;
     public Regex CompiledRegex        { get; }
     public ProcessManager? ProcessManager { get; }
 }

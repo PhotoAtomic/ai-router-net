@@ -45,6 +45,11 @@ class Program
 
         var router = new Router(initialSnapshot, requestLogger);
 
+        // LlamaCpp monitor — always created; no-op until rules with IsLLamaCpp arrive
+        var llamaMonitor = new LlamaCppMonitorService();
+        llamaMonitor.UpdateRules(initialSnapshot.Rules);
+        llamaMonitor.Start();
+
         Console.WriteLine($"AiRouter starting on {listenUrl}");
         Router.PrintRules(initialSnapshot);
         Console.WriteLine();
@@ -71,6 +76,7 @@ class Program
                     }, TaskScheduler.Default);
 
                     router.Reload(newSnapshot);
+                    llamaMonitor.UpdateRules(newSnapshot.Rules);
                 }
                 catch (Exception ex)
                 {
@@ -91,6 +97,7 @@ class Program
                 .AddInteractiveServerComponents();
             builder.Services.AddAntiforgery();
             builder.Services.AddSingleton(logWatcher);
+            builder.Services.AddSingleton(llamaMonitor);
         }
 
         var app = builder.Build();
@@ -121,6 +128,7 @@ class Program
             router.Dispose();
             requestLogger?.Dispose();
             logWatcher?.Dispose();
+            llamaMonitor.Dispose();
         });
 
         // --- Background keyboard listener ------------------------------------
