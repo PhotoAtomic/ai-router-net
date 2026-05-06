@@ -114,6 +114,10 @@ class Program
         app.MapPost("/v1/messages", async (HttpContext ctx) =>
             await router.HandleMessagesAsync(ctx));
 
+        // Generic handler for any /v1/* endpoint
+        app.MapMethods("/v1/{**path}", new[] { "GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD" }, async (HttpContext ctx) =>
+            await router.HandleGenericAsync(ctx));
+
         // Dashboard (Blazor Server) — only when --log is active
         if (logWatcher is not null)
         {

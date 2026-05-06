@@ -69,7 +69,7 @@ class Router : IDisposable
     }
 
     // Main entry point for /v1/messages
-    public async Task HandleMessagesAsync(HttpContext ctx)
+    public async Task HandleGenericAsync(HttpContext ctx)
     {
         // Capture snapshot once; reload during this request has no effect on it.
         var snap = _snapshot;
@@ -93,12 +93,12 @@ class Router : IDisposable
         string? model = ExtractModel(body);
 
         // --- Find route (may be null) ----------------------------------------
-        var rule       = !string.IsNullOrEmpty(model) ? FindRule(snap, model) : null;
-        var targetUrl  = rule is not null ? rule.BaseUrl.TrimEnd('/') + MessagesPath : null;
+        var rule = !string.IsNullOrEmpty(model) ? FindRule(snap, model) : snap.Rules.LastOrDefault();
+        var targetUrl = rule is not null ? rule.BaseUrl.TrimEnd('/') + ctx.Request.Path + ctx.Request.QueryString : null;
 
         // --- Apply ForceModel BEFORE logging the Request so the body we log --
         // matches what the upstream will actually receive. ---------------------
-        if (rule is not null && !string.IsNullOrEmpty(rule.ForceModel))
+        if (rule is not null && !string.IsNullOrEmpty(rule.ForceModel) && !string.IsNullOrWhiteSpace(body))
         {
             body = ReplaceModel(body, rule.ForceModel);
             requestSizeBytes = (long)Encoding.UTF8.GetByteCount(body);
@@ -116,16 +116,10 @@ class Router : IDisposable
             body);
 
         // --- Validate ---------------------------------------------------------
-        if (string.IsNullOrEmpty(model))
-        {
-            await WriteErrorAndLogAsync(res, 400, "missing 'model' field in request body",
-                correlationId, stopwatch);
-            return;
-        }
-
         if (rule is null || targetUrl is null)
         {
-            await WriteErrorAndLogAsync(res, 404, $"No routing rule matched model '{model}'",
+            // No applicable rule found (either no rules or no match)
+            await WriteErrorAndLogAsync(res, 404, "No routing rule matched the request",
                 correlationId, stopwatch);
             return;
         }
@@ -185,8 +179,12 @@ class Router : IDisposable
         // --- Build upstream request (factory: reusable for replay) -----------
         HttpRequestMessage BuildUpstreamRequest()
         {
-            var msg = new HttpRequestMessage(HttpMethod.Post, targetUrl);
-            msg.Content = new StringContent(body, Encoding.UTF8, "application/json");
+            var method = new HttpMethod(ctx.Request.Method);
+            var msg = new HttpRequestMessage(method, targetUrl);
+
+            // Include body for methods that normally have payloads
+            if (method == HttpMethod.Post || method == HttpMethod.Put || method == HttpMethod.Patch || method == HttpMethod.Delete)
+                msg.Content = new StringContent(body, Encoding.UTF8, "application/json");
 
             foreach (var (name, values) in req.Headers)
             {
@@ -499,6 +497,10 @@ class Router : IDisposable
 
     // -------------------------------------------------------------------------
     // Helpers
+
+    // Compatibility wrapper for legacy route
+    public async Task HandleMessagesAsync(HttpContext ctx) => await HandleGenericAsync(ctx);
+
     // -------------------------------------------------------------------------
 
     private static Dictionary<string, string> CollectRequestHeaders(IHeaderDictionary headers)
