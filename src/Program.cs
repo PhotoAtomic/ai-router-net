@@ -98,6 +98,7 @@ class Program
             builder.Services.AddAntiforgery();
             builder.Services.AddSingleton(logWatcher);
             builder.Services.AddSingleton(llamaMonitor);
+            builder.Services.AddSingleton<RuleSetupService>(_ => new RuleSetupService((IConfigurationRoot)config));
         }
 
         var app = builder.Build();

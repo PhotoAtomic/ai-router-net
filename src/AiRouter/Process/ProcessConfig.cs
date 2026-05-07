@@ -1,6 +1,6 @@
 namespace AiRouter.Process;
 
-class ProcessConfig
+public class ProcessConfig
 {
     // Executable path, e.g. "pwsh" or "C:\llama\llama-server.exe"
     public string FileName { get; set; } = string.Empty;

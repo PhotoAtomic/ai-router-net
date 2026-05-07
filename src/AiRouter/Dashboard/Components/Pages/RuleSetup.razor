@@ -1,0 +1,430 @@
+@namespace AiRouter.Dashboard.Components.Pages
+@page "/dashboard/rule-setup"
+@implements IDisposable
+@inject RuleSetupService Rules
+@inject IJSRuntime JS
+@using AiRouter
+@using AiRouter.Process
+
+<!-- ── Header ─────────────────────────────────────────────────── -->
+<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:1.5rem;">
+    <h2 style="margin:0; font-size:1.25rem; color:#90cdf4;">Rule Setup</h2>
+    <button @onclick="AddNewRule" style="@ButtonStyle; background:#38a169; border-color:#48bb78; color:white;">
+        + Add Rule
+    </button>
+</div>
+
+<!-- ── Rules Table ────────────────────────────────────────────── -->
+@if (_rules.Count == 0)
+{
+    <div style="background:#1a202c; border:1px solid #2d3748; border-radius:8px; padding:3rem; text-align:center;">
+        <p style="color:#718096; margin:0;">No routing rules configured.</p>
+        <p style="color:#a0aec0; font-size:.85rem; margin-top:.5rem;">Click "Add Rule" to create your first rule.</p>
+    </div>
+}
+else
+{
+    <div style="overflow-x:auto;" @ref="_tableContainer">
+        <table style="@TableStyle">
+            <thead>
+                <tr style="background:#1a202c; position:sticky; top:0; z-index:1;">
+                    <th style="@Th; width:60px;">Actions</th>
+                    <th style="@Th">Pattern</th>
+                    <th style="@Th">BaseUrl</th>
+                    <th style="@Th">Force Model</th>
+                    <th style="@Th; width:140px;">Enable LlamaCpp Recover</th>
+                    <th style="@Th; width:120px;">Is LlamaCpp</th>
+                    <th style="@Th">Process FileName</th>
+                    <th style="@Th">Process Arguments</th>
+                    <th style="@Th; width:120px;">Startup Delay (s)</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var rule in _rules)
+                {
+                    var idx = _rules.IndexOf(rule);
+                    var isEditing = _editingRules.TryGetValue(idx, out var editRule);
+
+                    <tr style="@RowStyle @GetRowBg(idx)">
+                        <td style="@Td; min-width:60px; padding:.45rem .5rem;">
+                            <div style="display:flex; gap:.25rem; flex-direction:column;">
+                                @if (isEditing)
+                                {
+                                    <button @onclick="() => SaveRule(idx)" style="@ActionBtnStyle; background:#38a169; border-color:#48bb78; color:white;" title="Save">✓</button>
+                                    <button @onclick="() => CancelEdit(idx)" style="@ActionBtnStyle; background:#718096; border-color:#a0aec0; color:white;" title="Cancel">✕</button>
+                                }
+                                else
+                                {
+                                    <button @onclick="() => StartEdit(idx)" style="@ActionBtnStyle" title="Edit">✎</button>
+                                    <button @onclick="() => DeleteRule(idx)" style="@ActionBtnStyle; color:#fc8181; border-color:#fc8181;" title="Delete">✕</button>
+                                    <button @onclick="() => Rules.MoveUp(idx)" style="@ActionBtnStyle" title="Move Up" disabled="@(idx == 0)">↑</button>
+                                    <button @onclick="() => Rules.MoveDown(idx)" style="@ActionBtnStyle" title="Move Down" disabled="@(idx == _rules.Count - 1)">↓</button>
+                                }
+                            </div>
+                        </td>
+                        <td style="@Td">
+                            @if (isEditing)
+                            {
+                                <input value="@editRule.Pattern"
+                                       @oninput="@(e => HandlePatternInput(idx, e.Value?.ToString() ?? ""))"
+                                       style="@InputStyle" />
+                                @if (!editRule.IsValidPattern())
+                                {
+                                    <div style="color:#fc8181; font-size:.7rem; margin-top:.25rem;">Invalid regex pattern</div>
+                                }
+                            }
+                            else
+                            {
+                                <span style="font-family:monospace; color:#e2e8f0;">@rule.Pattern</span>
+                            }
+                        </td>
+                        <td style="@Td">
+                            <span style="font-family:monospace; color:#68d391;">@rule.BaseUrl</span>
+                        </td>
+                        <td style="@Td">
+                            @if (isEditing)
+                            {
+                                <input value="@editRule.ForceModel"
+                                       @oninput="@(e => HandleForceModelInput(idx, e.Value?.ToString()))"
+                                       style="@InputStyle" placeholder="optional" />
+                            }
+                            else
+                            {
+                                <span style="color:#a0aec0;">@(string.IsNullOrEmpty(rule.ForceModel) ? "—" : rule.ForceModel)</span>
+                            }
+                        </td>
+                        <td style="@Td">
+                            <input type="checkbox" checked="@rule.EnableLLamaCppModelRecover" disabled="true" />
+                        </td>
+                        <td style="@Td">
+                            <input type="checkbox" checked="@rule.IsLLamaCpp" disabled="true" />
+                        </td>
+                        <td style="@Td">
+                            @if (isEditing)
+                            {
+                                <input value="@editRule.Process?.FileName"
+                                       @oninput="@(e => HandleProcessFileNameInput(idx, e.Value?.ToString() ?? ""))"
+                                       style="@InputStyle" placeholder="executable" />
+                                @if (editRule.Process is not null && !editRule.Process.IsValidFileName())
+                                {
+                                    <div style="color:#fc8181; font-size:.7rem; margin-top:.25rem;">File not found</div>
+                                }
+                            }
+                            else
+                            {
+                                <span style="font-family:monospace; color:#e2e8f0;">@(rule.Process?.FileName ?? "—")</span>
+                            }
+                        </td>
+                        <td style="@Td">
+                            @if (isEditing)
+                            {
+                                <input value="@editRule.Process?.Arguments"
+                                       @oninput="@(e => HandleProcessArgumentsInput(idx, e.Value?.ToString() ?? ""))"
+                                       style="@InputStyle" placeholder="arguments" />
+                            }
+                            else
+                            {
+                                <span style="color:#a0aec0;">@(string.IsNullOrEmpty(rule.Process?.Arguments) ? "—" : rule.Process!.Arguments)</span>
+                            }
+                        </td>
+                        <td style="@Td">
+                            @if (isEditing)
+                            {
+                                <input type="number" value="@editRule.Process?.StartupDelaySeconds"
+                                       @oninput="@(e => HandleStartupDelayInput(idx, e.Value?.ToString()))"
+                                       style="@InputStyle; width:80px;" min="0" max="3600" />
+                            }
+                            else
+                            {
+                                <span style="color:#e2e8f0;">@(rule.Process?.StartupDelaySeconds ?? 2)s</span>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+    <p style="color:#718096; font-size:.85rem; margin-top:.75rem;">
+        @_rules.Count rule@( _rules.Count != 1 ? "s" : "") configured
+    </p>
+}
+
+<!-- ── Add New Rule Modal/Panel ──────────────────────────────── -->
+@if (_showAddPanel)
+{
+    <div style="background:#1a202c; border:1px solid #2d3748; border-radius:8px; padding:1.25rem; margin-top:1.5rem;">
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:1rem;">
+            <h3 style="margin:0; font-size:1rem; color:#90cdf4;">Add New Rule</h3>
+            <button @onclick="CloseAddPanel" style="background:none; border:none; cursor:pointer; color:#a0aec0; font-size:1.25rem; line-height:1;">&times;</button>
+        </div>
+        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:1rem;">
+            <div>
+                <label style="display:block; font-size:.75rem; color:#718096; margin-bottom:.35rem;">Pattern (regex)</label>
+                <input value="@_newRule.Pattern"
+                       @oninput="@(e => HandleNewRulePatternInput(e.Value?.ToString() ?? ""))"
+                       style="@InputStyle; width:100%;" placeholder="e.g., ^claude-3.*" />
+                @if (!_newRule.IsValidPattern())
+                {
+                    <div style="color:#fc8181; font-size:.7rem; margin-top:.25rem;">@(_newRule.Pattern.Length > 0 ? "Invalid regex pattern" : "")</div>
+                }
+            </div>
+            <div>
+                <label style="display:block; font-size:.75rem; color:#718096; margin-bottom:.35rem;">BaseUrl</label>
+                <input value="@_newRule.BaseUrl"
+                       @oninput="@(e => HandleNewRuleBaseUrlInput(e.Value?.ToString() ?? ""))"
+                       style="@InputStyle; width:100%;" placeholder="e.g., http://localhost:8080/v1" />
+            </div>
+            <div>
+                <label style="display:block; font-size:.75rem; color:#718096; margin-bottom:.35rem;">Force Model (optional)</label>
+                <input value="@_newRule.ForceModel"
+                       @oninput="@(e => HandleNewRuleForceModelInput(e.Value?.ToString()))"
+                       style="@InputStyle; width:100%;" placeholder="e.g., qwen36-dense" />
+            </div>
+            <div>
+                <label style="display:block; font-size:.75rem; color:#718096; margin-bottom:.35rem;">Process FileName (optional)</label>
+                <input value="@_newRule.Process?.FileName"
+                       @oninput="@(e => HandleNewRuleProcessFileNameInput(e.Value?.ToString() ?? ""))"
+                       style="@InputStyle; width:100%;" placeholder="e.g., pwsh" />
+                @if (_newRule.Process is not null && !_newRule.Process.IsValidFileName())
+                {
+                    <div style="color:#fc8181; font-size:.7rem; margin-top:.25rem;">@(_newRule.Process.FileName.Length > 0 ? "File not found" : "")</div>
+                }
+            </div>
+            <div>
+                <label style="display:block; font-size:.75rem; color:#718096; margin-bottom:.35rem;">Process Arguments (optional)</label>
+                <input value="@_newRule.Process?.Arguments"
+                       @oninput="@(e => HandleNewRuleProcessArgumentsInput(e.Value?.ToString() ?? ""))"
+                       style="@InputStyle; width:100%;" placeholder="e.g., -File script.ps1" />
+            </div>
+            <div>
+                <label style="display:block; font-size:.75rem; color:#718096; margin-bottom:.35rem;">Startup Delay (seconds)</label>
+                <input type="number" value="@_newRule.Process?.StartupDelaySeconds"
+                       @oninput="@(e => HandleNewRuleStartupDelayInput(e.Value?.ToString()))"
+                       style="@InputStyle; width:100%;" min="0" max="3600" />
+            </div>
+            <div style="display:flex; align-items:flex-end;">
+                <button @onclick="AddNewRuleConfirm" style="@ButtonStyle; background:#38a169; border-color:#48bb78; color:white; width:100%;" disabled="!_newRule.IsValidPattern()">
+                    Add Rule
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    List<RoutingRuleConfig> _rules = new();
+    Dictionary<int, RoutingRuleConfig> _editingRules = new();
+    RoutingRuleConfig _newRule = new();
+    bool _showAddPanel = false;
+    Microsoft.AspNetCore.Components.ElementReference _tableContainer;
+
+    protected override void OnInitialized()
+    {
+        _rules = Rules.GetRules();
+    }
+
+    void OnChanged()
+    {
+        _rules = Rules.GetRules();
+        _editingRules.Clear();
+        StateHasChanged();
+    }
+
+    public void Dispose()
+    {
+        // No event handlers to unsubscribe - service is singleton
+    }
+
+    // ── Rule operations ─────────────────────────────────────────────
+
+    void StartEdit(int index)
+    {
+        // Create a copy for editing
+        var rule = _rules[index];
+        _editingRules[index] = new RoutingRuleConfig
+        {
+            Pattern = rule.Pattern,
+            BaseUrl = rule.BaseUrl,
+            ForceModel = rule.ForceModel,
+            EnableLLamaCppModelRecover = rule.EnableLLamaCppModelRecover,
+            IsLLamaCpp = rule.IsLLamaCpp,
+            Process = rule.Process is not null ? new ProcessConfig
+            {
+                FileName = rule.Process.FileName,
+                Arguments = rule.Process.Arguments,
+                StartupDelaySeconds = rule.Process.StartupDelaySeconds
+            } : null
+        };
+    }
+
+    void CancelEdit(int index)
+    {
+        _editingRules.Remove(index);
+    }
+
+    void SaveRule(int index)
+    {
+        if (_editingRules.TryGetValue(index, out var editedRule))
+        {
+            Rules.UpdateRule(index, editedRule);
+            _editingRules.Remove(index);
+        }
+    }
+
+    void DeleteRule(int index)
+    {
+        Rules.DeleteRule(index);
+    }
+
+    // ── Add new rule ───────────────────────────────────────────────
+
+    void AddNewRule()
+    {
+        _showAddPanel = true;
+        // Initialize with default values
+        _newRule = new RoutingRuleConfig
+        {
+            Pattern = "^",
+            BaseUrl = "http://localhost:8080/v1",
+            ForceModel = null,
+            Process = new ProcessConfig
+            {
+                FileName = "pwsh",
+                Arguments = "-File script.ps1",
+                StartupDelaySeconds = 3
+            },
+            EnableLLamaCppModelRecover = false,
+            IsLLamaCpp = false
+        };
+    }
+
+    void CloseAddPanel()
+    {
+        _showAddPanel = false;
+    }
+
+    void AddNewRuleConfirm()
+    {
+        if (_newRule.IsValidPattern())
+        {
+            Rules.AddRule(_newRule);
+            _showAddPanel = false;
+            // Reset for next time
+            _newRule = new RoutingRuleConfig();
+        }
+    }
+
+    // ── Event handlers for inline editing ─────────────────────────
+
+    void HandlePatternInput(int index, string value)
+    {
+        if (_editingRules.TryGetValue(index, out var rule))
+        {
+            rule.Pattern = value;
+            StateHasChanged();
+        }
+    }
+
+    void HandleForceModelInput(int index, string? value)
+    {
+        if (_editingRules.TryGetValue(index, out var rule))
+        {
+            rule.ForceModel = value;
+            StateHasChanged();
+        }
+    }
+
+    void HandleProcessFileNameInput(int index, string value)
+    {
+        if (_editingRules.TryGetValue(index, out var rule) && rule.Process is not null)
+        {
+            rule.Process.FileName = value;
+            StateHasChanged();
+        }
+    }
+
+    void HandleProcessArgumentsInput(int index, string value)
+    {
+        if (_editingRules.TryGetValue(index, out var rule) && rule.Process is not null)
+        {
+            rule.Process.Arguments = value;
+            StateHasChanged();
+        }
+    }
+
+    void HandleStartupDelayInput(int index, string? value)
+    {
+        if (_editingRules.TryGetValue(index, out var rule) && rule.Process is not null)
+        {
+            if (int.TryParse(value, out var delay))
+            {
+                rule.Process.StartupDelaySeconds = delay;
+            }
+            StateHasChanged();
+        }
+    }
+
+    // ── Event handlers for new rule form ──────────────────────────
+
+    void HandleNewRulePatternInput(string value)
+    {
+        _newRule.Pattern = value;
+        StateHasChanged();
+    }
+
+    void HandleNewRuleBaseUrlInput(string value)
+    {
+        _newRule.BaseUrl = value;
+        StateHasChanged();
+    }
+
+    void HandleNewRuleForceModelInput(string? value)
+    {
+        _newRule.ForceModel = value;
+        StateHasChanged();
+    }
+
+    void HandleNewRuleProcessFileNameInput(string value)
+    {
+        if (_newRule.Process is not null)
+        {
+            _newRule.Process.FileName = value;
+        }
+        StateHasChanged();
+    }
+
+    void HandleNewRuleProcessArgumentsInput(string value)
+    {
+        if (_newRule.Process is not null)
+        {
+            _newRule.Process.Arguments = value;
+        }
+        StateHasChanged();
+    }
+
+    void HandleNewRuleStartupDelayInput(string? value)
+    {
+        if (_newRule.Process is not null && int.TryParse(value, out var delay))
+        {
+            _newRule.Process.StartupDelaySeconds = delay;
+        }
+        StateHasChanged();
+    }
+
+    // ── Helpers ────────────────────────────────────────────────────
+
+    string GetRowBg(int index)
+    {
+        return _editingRules.ContainsKey(index) ? "background:#2a3f2a;" : string.Empty;
+    }
+
+    // ── Inline styles ──────────────────────────────────────────────
+
+    const string TableStyle = "width:100%; border-collapse:collapse; font-size:.8rem;";
+    const string Th = "padding:.5rem .75rem; text-align:left; border-bottom:1px solid #2d3748; white-space:nowrap; color:#90cdf4; font-weight:500;";
+    const string Td = "padding:.45rem .75rem; border-bottom:1px solid #1a202c; vertical-align:top;";
+    const string RowStyle = "transition:background .15s;";
+    const string InputStyle = "background:#1a202c; border:1px solid #2d3748; color:#e2e8f0; border-radius:6px; padding:.4rem .75rem; font-size:.85rem;";
+    const string ButtonStyle = "background:#2d3748; border:1px solid #4a5568; color:#e2e8f0; border-radius:6px; padding:.4rem .9rem; cursor:pointer; font-size:.85rem;";
+    const string ActionBtnStyle = "background:#2d3748; border:1px solid #4a5568; color:#e2e8f0; border-radius:4px; padding:.3rem .5rem; cursor:pointer; font-size:.8rem; min-width:28px;";
+}
