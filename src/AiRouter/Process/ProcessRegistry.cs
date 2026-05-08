@@ -68,12 +68,25 @@ class ProcessRegistry : IDisposable
         }
     }
 
+    /// <summary>Kills the process manager for the given key (FileName|Arguments) if it exists and is owned</summary>
+    public async Task KillProcessAsync(string key)
+    {
+        if (!_managers.TryGetValue(key, out var mgr))
+            return;
+
+        if (mgr.IsAlive && mgr.IsOwned)
+        {
+            Console.WriteLine($"[registry] Terminating process by request: {key}");
+            await mgr.KillAsync();
+        }
+    }
+
     public void Dispose()
     {
         foreach (var mgr in _managers.Values)
             mgr.Dispose();
     }
 
-    private static string MakeKey(ProcessConfig cfg) =>
+    public static string MakeKey(ProcessConfig cfg) =>
         $"{cfg.FileName.Trim()}|{cfg.Arguments.Trim()}";
 }

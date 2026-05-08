@@ -3,6 +3,7 @@
 @implements IDisposable
 @inject LogWatcherService Watcher
 @inject AiRouter.Routing.LlamaCppMonitorService LlamaMonitor
+@inject AiRouter.Process.ProcessRegistry Registry
 @inject IJSRuntime JS
 @using System.Linq
 @using System.Threading
@@ -17,7 +18,19 @@
         @foreach (var (baseUrl, models) in llamaSnapshot)
         {
             <div style="display:flex; align-items:flex-start; gap:1rem; margin-bottom:.5rem; flex-wrap:wrap;">
-                <span style="font-family:monospace; font-size:.8rem; color:#a0aec0; padding-top:.3rem; min-width:0; word-break:break-all;">@baseUrl</span>
+                <div style="flex:1; min-width:0;">
+                    <div style="display:flex; align-items:center; gap:.5rem; flex-wrap:wrap;">
+                        <span style="font-family:monospace; font-size:.8rem; color:#a0aec0; padding:.25rem 0; min-width:0; word-break:break-all;">@baseUrl</span>
+                        @if (LlamaMonitor.IsProcessOwned(baseUrl.TrimEnd('/')))
+                        {
+                            <button @onclick="() => TerminateProcessAsync(baseUrl.TrimEnd('/'))"
+                                    title="Terminate process for this server"
+                                    style="@TerminateBtnStyle">
+                                Terminate
+                            </button>
+                        }
+                    </div>
+                </div>
                 <div style="display:flex; flex-wrap:wrap; gap:.4rem;">
                     @if (models.Count == 0)
                     {
@@ -264,6 +277,19 @@ else
         await LlamaMonitor.UnloadAsync(baseUrl, modelId);
     }
 
+    async Task TerminateProcessAsync(string baseUrl)
+    {
+        bool confirmed = await JS.InvokeAsync<bool>("confirm", $"Terminate process for {baseUrl}?\n\nThis will stop the llama.cpp server and all loaded models.");
+        if (!confirmed) return;
+        var success = await LlamaMonitor.KillProcessAsync(baseUrl, Registry);
+        if (success)
+        {
+            // Refresh the display after termination
+            await Task.Delay(500);
+            InvokeAsync(StateHasChanged);
+        }
+    }
+
     void ClearFilters()
     {
         _search         = string.Empty;
@@ -371,5 +397,6 @@ else
     const string RowStyle   = "transition:background .15s;";
     const string InputStyle = "background:#1a202c; border:1px solid #2d3748; color:#e2e8f0; border-radius:6px; padding:.4rem .75rem; font-size:.85rem; min-width:140px;";
     const string ButtonStyle= "background:#2d3748; border:1px solid #4a5568; color:#e2e8f0; border-radius:6px; padding:.4rem .9rem; cursor:pointer; font-size:.85rem;";
+    const string TerminateBtnStyle = "background:#c53030; border:1px solid #e53e3e; color:white; border-radius:4px; padding:.25rem .75rem; cursor:pointer; font-size:.75rem; font-weight:500; white-space:nowrap;";
 }
 

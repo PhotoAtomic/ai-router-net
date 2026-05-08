@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using AiRouter.Process;
 
 namespace AiRouter.Routing;
 
@@ -17,6 +18,12 @@ internal sealed class LlamaCppMonitorService : IDisposable
 
     // baseUrl -> list of all available model ids (loaded or not)
     private readonly Dictionary<string, List<string>> _allModels = new();
+
+    // baseUrl -> process config (for termination)
+    private readonly Dictionary<string, ProcessConfig> _processConfigs = new();
+
+    // baseUrl -> isOwned flag
+    private readonly Dictionary<string, bool> _processIsOwned = new();
 
     private Timer? _timer;
 
@@ -38,6 +45,20 @@ internal sealed class LlamaCppMonitorService : IDisposable
                 _loadedModels.Remove(key);
             foreach (var key in _allModels.Keys.Except(urls).ToList())
                 _allModels.Remove(key);
+            foreach (var key in _processConfigs.Keys.Except(urls).ToList())
+                _processConfigs.Remove(key);
+
+            //// Update process configs for current URLs
+            //foreach (var rule in rules.Where(r => r.IsLLamaCpp))
+            //{
+            //    var url = rule.BaseUrl.TrimEnd('/');
+            //    if (rule.Process is not null)
+            //    {
+            //        _processConfigs[url] = rule.Process;
+            //        // Track if the process is owned (only if ProcessManager exists and is owned)
+            //        _processIsOwned[url] = rule.ProcessManager is not null && rule.ProcessManager.IsOwned;
+            //    }
+            //}
         }
     }
 
@@ -68,6 +89,30 @@ internal sealed class LlamaCppMonitorService : IDisposable
         }
     }
 
+    // Returns the process config for the given baseUrl (if any)
+    public ProcessConfig? GetProcessConfig(string baseUrl)
+    {
+        lock (_lock)
+        {
+            if (_processConfigs.TryGetValue(baseUrl.TrimEnd('/'), out var config))
+                return config;
+            return null;
+        }
+    }
+
+    // Returns whether the process for the given baseUrl is owned by this instance
+    public bool IsProcessOwned(string baseUrl)
+    {
+        lock (_lock)
+        {
+            // The dictionary keys are stored with trailing slashes trimmed
+            // Use TryGetValue directly since the Razor page passes trimmed baseUrl
+            if (!_processIsOwned.TryGetValue(baseUrl, out var isOwned))
+                return false;
+            return isOwned;
+        }
+    }
+
     public async Task<bool> UnloadAsync(string baseUrl, string modelId, CancellationToken ct = default)
     {
         baseUrl = baseUrl.TrimEnd('/');
@@ -82,6 +127,25 @@ internal sealed class LlamaCppMonitorService : IDisposable
         {
             return false;
         }
+    }
+
+    // Kills the process associated with the given baseUrl (if any)
+    // Returns true if a process was found and killed
+    public async Task<bool> KillProcessAsync(string baseUrl, ProcessRegistry registry, CancellationToken ct = default)
+    {
+        baseUrl = baseUrl.TrimEnd('/');
+        ProcessConfig? config;
+        lock (_lock)
+        {
+            _processConfigs.TryGetValue(baseUrl, out config);
+        }
+
+        if (config is null)
+            return false;
+
+        var key = ProcessRegistry.MakeKey(config);
+        await registry.KillProcessAsync(key);
+        return true;
     }
 
     private async Task PollAsync()

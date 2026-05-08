@@ -99,6 +99,7 @@ class Program
             builder.Services.AddSingleton(logWatcher);
             builder.Services.AddSingleton(llamaMonitor);
             builder.Services.AddSingleton<RuleSetupService>(_ => new RuleSetupService((IConfigurationRoot)config));
+            builder.Services.AddSingleton<ProcessRegistry>(registry);
         }
 
         var app = builder.Build();
