@@ -61,19 +61,35 @@ public static class RoutingRuleConfigExtensions
 }
 
 /// <summary>
+/// Event args for rule changes.
+/// </summary>
+public class RuleChangedEventArgs : EventArgs
+{
+    public List<RoutingRuleConfig> Rules { get; init; }
+    public RuleChangedEventArgs(List<RoutingRuleConfig> rules)
+    {
+        Rules = rules;
+    }
+}
+
+/// <summary>
 /// Service to manage routing rules configuration with CRUD operations.
 /// Changes are saved to appsettings.json and automatically trigger config reload.
 /// </summary>
-public sealed class RuleSetupService
+public sealed class RuleSetupService : IDisposable
 {
     private readonly IConfigurationRoot _config;
     private readonly string _configPath;
+    private bool _disposed = false;
 
     public RuleSetupService(IConfigurationRoot config)
     {
         _config = config;
         _configPath = Path.Combine(Directory.GetCurrentDirectory(), "appsettings.json");
     }
+
+    /// <summary>Event fired when rules are saved (after config reload completes)</summary>
+    public event EventHandler<RuleChangedEventArgs>? RulesChanged;
 
     /// <summary>Get all current routing rules</summary>
     public List<RoutingRuleConfig> GetRules()
@@ -88,21 +104,20 @@ public sealed class RuleSetupService
         // Read the current appsettings.json content
         var currentContent = File.ReadAllText(_configPath);
 
-        // Parse the JSON
-        using var doc = JsonDocument.Parse(currentContent);
-        var rootElement = doc.RootElement.Clone();
-
         // Serialize rules to JSON
         var rulesJson = JsonSerializer.Serialize(rules, new JsonSerializerOptions { WriteIndented = true });
 
         // Build new JSON object with updated RoutingRules
-        var newJson = BuildUpdatedConfig(rootElement, rulesJson);
+        var newJson = BuildUpdatedConfig(currentContent, rulesJson);
 
         // Write the updated config back to file
         File.WriteAllText(_configPath, newJson);
 
         // Reload the configuration
         _config.Reload();
+
+        // Notify subscribers that rules have changed
+        RulesChanged?.Invoke(this, new RuleChangedEventArgs(rules));
     }
 
     /// <summary>Add a new rule at the specified position (default: end)</summary>
@@ -166,35 +181,108 @@ public sealed class RuleSetupService
 
     // ── Private helpers ──────────────────────────────────────────────────────
 
-    private string BuildUpdatedConfig(JsonElement originalRoot, string rulesJson)
+    private string BuildUpdatedConfig(string originalJson, string rulesJson)
     {
         // Use JsonDocument to parse and build new JSON
         var options = new JsonSerializerOptions { WriteIndented = true };
 
+        // Sanitize input to remove comments before parsing
+        var sanitizedJson = RemoveJsonComments(originalJson);
+
+        // Parse the original JSON
+        using var doc = JsonDocument.Parse(sanitizedJson);
+        var rootElement = doc.RootElement.Clone();
+
         // Create a new object and populate it
-        var newRoot = new JsonObject
-        {
-            ["RoutingRules"] = JsonNode.Parse(rulesJson)
-        };
+        var newRoot = new JsonObject();
+        newRoot["RoutingRules"] = JsonNode.Parse(rulesJson);
 
         // Copy other properties from original config
-        if (originalRoot.TryGetProperty("ApiKeys", out var apiKeys))
+        if (rootElement.TryGetProperty("ApiKeys", out var apiKeys))
         {
             newRoot["ApiKeys"] = JsonNode.Parse(apiKeys.GetRawText());
         }
-        if (originalRoot.TryGetProperty("DefaultApiKey", out var defaultApiKey))
+        if (rootElement.TryGetProperty("DefaultApiKey", out var defaultApiKey))
         {
             newRoot["DefaultApiKey"] = JsonNode.Parse(defaultApiKey.GetRawText());
         }
-        if (originalRoot.TryGetProperty("Host", out var host))
+        if (rootElement.TryGetProperty("Host", out var host))
         {
             newRoot["Host"] = JsonNode.Parse(host.GetRawText());
         }
-        if (originalRoot.TryGetProperty("Port", out var port))
+        if (rootElement.TryGetProperty("Port", out var port))
         {
             newRoot["Port"] = JsonNode.Parse(port.GetRawText());
         }
 
         return newRoot.ToJsonString(options);
+    }
+
+    // ── Comment removal helpers ──────────────────────────────────────────────
+
+    /// <summary>Remove single-line (//) and multi-line (/* */) comments from JSON</summary>
+    private static string RemoveJsonComments(string input)
+    {
+        if (string.IsNullOrEmpty(input))
+            return input;
+
+        var result = new System.Text.StringBuilder(input.Length);
+        int i = 0;
+        int length = input.Length;
+
+        while (i < length)
+        {
+            // Check for single-line comment
+            if (i + 1 < length && input[i] == '/' && input[i + 1] == '/')
+            {
+                // Skip until end of line
+                while (i < length && input[i] != '\n')
+                    i++;
+                // Keep the newline
+                if (i < length)
+                    result.Append(input[i++]);
+            }
+            // Check for multi-line comment
+            else if (i + 1 < length && input[i] == '/' && input[i + 1] == '*')
+            {
+                // Skip until */
+                i += 2;
+                while (i + 1 < length && !(input[i] == '*' && input[i + 1] == '/'))
+                    i++;
+                i += 2; // Skip */
+            }
+            // Check for string literal - preserve content but watch for escaped quotes
+            else if (input[i] == '"')
+            {
+                result.Append(input[i++]);
+                while (i < length && input[i] != '"')
+                {
+                    if (input[i] == '\\' && i + 1 < length)
+                    {
+                        result.Append(input[i++]);
+                        if (i < length)
+                            result.Append(input[i++]);
+                    }
+                    else
+                    {
+                        result.Append(input[i++]);
+                    }
+                }
+                if (i < length)
+                    result.Append(input[i++]); // Closing quote
+            }
+            else
+            {
+                result.Append(input[i++]);
+            }
+        }
+
+        return result.ToString();
+    }
+
+    public void Dispose()
+    {
+        _disposed = true;
+        RulesChanged = null;
     }
 }

@@ -15,6 +15,9 @@ internal sealed class LlamaCppMonitorService : IDisposable
     // baseUrl -> list of loaded model ids
     private readonly Dictionary<string, List<string>> _loadedModels = new();
 
+    // baseUrl -> list of all available model ids (loaded or not)
+    private readonly Dictionary<string, List<string>> _allModels = new();
+
     private Timer? _timer;
 
     public event Action? Changed;
@@ -33,6 +36,8 @@ internal sealed class LlamaCppMonitorService : IDisposable
             // Remove stale entries
             foreach (var key in _loadedModels.Keys.Except(urls).ToList())
                 _loadedModels.Remove(key);
+            foreach (var key in _allModels.Keys.Except(urls).ToList())
+                _allModels.Remove(key);
         }
     }
 
@@ -49,6 +54,17 @@ internal sealed class LlamaCppMonitorService : IDisposable
             return _loadedModels.ToDictionary(
                 kvp => kvp.Key,
                 kvp => (IReadOnlyList<string>)kvp.Value.ToList());
+        }
+    }
+
+    // Returns all available models (not just loaded) for the given baseUrl
+    public IReadOnlyList<string> GetAllModels(string baseUrl)
+    {
+        lock (_lock)
+        {
+            if (_allModels.TryGetValue(baseUrl.TrimEnd('/'), out var models))
+                return models.ToList();
+            return [];
         }
     }
 
@@ -85,37 +101,47 @@ internal sealed class LlamaCppMonitorService : IDisposable
                 using var doc = await JsonDocument.ParseAsync(stream);
 
                 var loaded = new List<string>();
+                var all = new List<string>();
                 if (doc.RootElement.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Array)
                 {
                     foreach (var item in data.EnumerateArray())
                     {
-                        // Only list models that are currently loaded
-                        string? statusValue = null;
-                        if (item.TryGetProperty("status", out var st) && st.ValueKind == JsonValueKind.Object
-                            && st.TryGetProperty("value", out var v))
-                        {
-                            statusValue = v.GetString();
-                        }
-
-                        if (!string.Equals(statusValue, "loaded", StringComparison.OrdinalIgnoreCase))
-                            continue;
-
+                        string? idValue = null;
                         if (item.TryGetProperty("id", out var idEl))
                         {
-                            var id = idEl.GetString();
-                            if (!string.IsNullOrEmpty(id))
-                                loaded.Add(id);
+                            idValue = idEl.GetString();
+                            if (!string.IsNullOrEmpty(idValue))
+                            {
+                                all.Add(idValue);
+                                // Also check if loaded
+                                string? statusValue = null;
+                                if (item.TryGetProperty("status", out var st) && st.ValueKind == JsonValueKind.Object
+                                    && st.TryGetProperty("value", out var v))
+                                {
+                                    statusValue = v.GetString();
+                                }
+
+                                if (!string.Equals(statusValue, "loaded", StringComparison.OrdinalIgnoreCase))
+                                    continue;
+
+                                loaded.Add(idValue);
+                            }
                         }
                     }
                 }
 
                 lock (_lock)
                 {
-                    if (!_loadedModels.TryGetValue(baseUrl, out var prev) || !prev.SequenceEqual(loaded))
-                    {
+                    bool loadedChanged = !_loadedModels.TryGetValue(baseUrl, out var prevLoaded) || !prevLoaded.SequenceEqual(loaded);
+                    bool allChanged = !_allModels.TryGetValue(baseUrl, out var prevAll) || !prevAll.SequenceEqual(all);
+
+                    if (loadedChanged)
                         _loadedModels[baseUrl] = loaded;
+                    if (allChanged)
+                        _allModels[baseUrl] = all;
+
+                    if (loadedChanged || allChanged)
                         anyChanged = true;
-                    }
                 }
             }
             catch
@@ -125,6 +151,11 @@ internal sealed class LlamaCppMonitorService : IDisposable
                     if (_loadedModels.TryGetValue(baseUrl, out var prev) && prev.Count > 0)
                     {
                         _loadedModels[baseUrl] = [];
+                        anyChanged = true;
+                    }
+                    if (_allModels.TryGetValue(baseUrl, out var prevAll) && prevAll.Count > 0)
+                    {
+                        _allModels[baseUrl] = [];
                         anyChanged = true;
                     }
                 }

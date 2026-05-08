@@ -1,7 +1,12 @@
 {
   "permissions": {
     "allow": [
-      "Bash(dotnet build *)"
+      "Bash(dotnet build *)",
+      "Bash(dotnet run *)",
+      "Bash(curl -s http://127.0.0.1:5001/dashboard/rule-setup)",
+      "Bash(taskkill /F /PID 2624)",
+      "Bash(taskkill /F /IM AiRouter.exe)",
+      "Bash(powershell *)"
     ]
   }
 }
