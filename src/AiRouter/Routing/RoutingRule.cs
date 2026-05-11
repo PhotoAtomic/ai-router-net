@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using AiRouter.Process;
+using AiRouter.Protocol;
 
 namespace AiRouter.Routing;
 
@@ -22,4 +23,9 @@ class RoutingRule
     public bool IsLLamaCpp             => Config.IsLLamaCpp;
     public Regex CompiledRegex        { get; }
     public ProcessManager? ProcessManager { get; }
+
+    public ApiFormat TargetFormat =>
+        Config.EndpointType.Equals("OpenAI", StringComparison.OrdinalIgnoreCase)
+            ? ApiFormat.OpenAI
+            : ApiFormat.Anthropic;
 }

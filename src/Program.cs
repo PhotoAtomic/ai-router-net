@@ -116,6 +116,9 @@ class Program
         app.MapPost("/v1/messages", async (HttpContext ctx) =>
             await router.HandleMessagesAsync(ctx));
 
+        app.MapPost("/v1/chat/completions", async (HttpContext ctx) =>
+            await router.HandleGenericAsync(ctx));
+
         // Generic handler for any /v1/* endpoint
         app.MapMethods("/v1/{**path}", new[] { "GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD" }, async (HttpContext ctx) =>
             await router.HandleGenericAsync(ctx));

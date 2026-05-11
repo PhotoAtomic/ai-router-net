@@ -138,20 +138,35 @@ public static class LoggedResponseParser
     /// </summary>
     public static ReconstructedResponse Reconstruct(IReadOnlyList<LoggedResponseEntry> entries)
     {
-        string? id = null, model = null, role = null, stopReason = null;
-        var text     = new StringBuilder();
-        var thinking = new StringBuilder();
-        long? inputTokens = null, outputTokens = null, cacheReadInputTokens = null;
-
-        // content_block index -> work-in-progress tool use
-        var pendingToolUses = new Dictionary<int, ToolUseBuilder>();
-        var orderedToolUses = new List<ToolUseBuilder>();
-
         // single non-stream response shortcut
         if (entries.Count == 1 && entries[0].Kind == "response" && entries[0].Json is JsonElement single)
         {
             return ReconstructFromSingle(single);
         }
+
+        // Detect if the first event looks like Anthropic or OpenAI
+        foreach (var e in entries)
+        {
+            if (e.Json is not JsonElement root || root.ValueKind != JsonValueKind.Object) continue;
+            // Anthropic events have "type" field; OpenAI chunks have "object" or "choices"
+            if (root.TryGetProperty("type", out _))
+                return ReconstructAnthropic(entries);
+            if (root.TryGetProperty("object", out _))
+                return ReconstructOpenAi(entries);
+        }
+
+        return new ReconstructedResponse();
+    }
+
+    private static ReconstructedResponse ReconstructAnthropic(IReadOnlyList<LoggedResponseEntry> entries)
+    {
+        string? id = null, model = null, role = null, stopReason = null;
+        var text     = new StringBuilder();
+        var thinking = new StringBuilder();
+        long? inputTokens = null, outputTokens = null, cacheReadInputTokens = null;
+
+        var pendingToolUses = new Dictionary<int, ToolUseBuilder>();
+        var orderedToolUses = new List<ToolUseBuilder>();
 
         foreach (var e in entries)
         {
@@ -241,6 +256,86 @@ public static class LoggedResponseParser
             InputTokens          = inputTokens,
             OutputTokens         = outputTokens,
             CacheReadInputTokens = cacheReadInputTokens,
+        };
+    }
+
+    private static ReconstructedResponse ReconstructOpenAi(IReadOnlyList<LoggedResponseEntry> entries)
+    {
+        string? id = null, model = null, stopReason = null;
+        var text = new StringBuilder();
+        var toolUses = new List<ReconstructedToolUse>();
+        long? inputTokens = null, outputTokens = null;
+
+        var pendingToolCalls = new Dictionary<int, OpenAiToolAcc>();
+
+        foreach (var e in entries)
+        {
+            if (e.Json is not JsonElement root || root.ValueKind != JsonValueKind.Object) continue;
+
+            id ??= root.TryGetProperty("id", out var idp) ? idp.GetString() : null;
+            model ??= root.TryGetProperty("model", out var mp) ? mp.GetString() : null;
+
+            if (!root.TryGetProperty("choices", out var choices) || choices.ValueKind != JsonValueKind.Array)
+                continue;
+
+            foreach (var choice in choices.EnumerateArray())
+            {
+                if (choice.TryGetProperty("delta", out var delta))
+                {
+                    if (delta.TryGetProperty("content", out var content) && content.ValueKind != JsonValueKind.Null)
+                        text.Append(content.GetString());
+
+                    if (delta.TryGetProperty("tool_calls", out var tcArr) && tcArr.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var tc in tcArr.EnumerateArray())
+                        {
+                            if (!tc.TryGetProperty("index", out var idxProp)) continue;
+                            var idx = idxProp.GetInt32();
+
+                            if (!pendingToolCalls.TryGetValue(idx, out var acc))
+                            {
+                                acc = new OpenAiToolAcc();
+                                pendingToolCalls[idx] = acc;
+                            }
+
+                            if (tc.TryGetProperty("id", out var tid))
+                                acc.Id = tid.GetString() ?? acc.Id;
+                            if (tc.TryGetProperty("function", out var fn))
+                            {
+                                if (fn.TryGetProperty("name", out var n))
+                                    acc.Name = n.GetString() ?? acc.Name;
+                                if (fn.TryGetProperty("arguments", out var a))
+                                    acc.Arguments.Append(a.GetString());
+                            }
+                        }
+                    }
+                }
+
+                if (choice.TryGetProperty("finish_reason", out var fr) && fr.ValueKind != JsonValueKind.Null)
+                    stopReason = fr.GetString();
+            }
+        }
+
+        foreach (var acc in pendingToolCalls.Values)
+        {
+            toolUses.Add(new ReconstructedToolUse
+            {
+                Id = acc.Id,
+                Name = acc.Name,
+                Input = acc.Arguments.ToString(),
+            });
+        }
+
+        return new ReconstructedResponse
+        {
+            Id           = id,
+            Model        = model,
+            Role         = "assistant",
+            StopReason   = stopReason,
+            Text         = text.ToString(),
+            ToolUses     = toolUses,
+            InputTokens  = inputTokens,
+            OutputTokens = outputTokens,
         };
     }
 
@@ -342,5 +437,12 @@ public static class LoggedResponseParser
             }
             return new ReconstructedToolUse { Id = Id, Name = Name, Input = pretty };
         }
+    }
+
+    private sealed class OpenAiToolAcc
+    {
+        public string Id { get; set; } = string.Empty;
+        public string Name { get; set; } = string.Empty;
+        public StringBuilder Arguments { get; } = new();
     }
 }

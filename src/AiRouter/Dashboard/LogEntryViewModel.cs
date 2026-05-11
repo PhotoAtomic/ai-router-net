@@ -87,15 +87,16 @@ public sealed class LogEntryViewModel
         RequestBody      = e.RequestBody ?? string.Empty;
         RequestPreview   = ExtractLastMessagePreview(RequestBody);
 
-        var req = AnthropicRequestParser.TryParse(RequestBody);
-        Metadata        = req is not null ? AnthropicRequestParser.ParseMetadata(req) : null;
-        MessageCount    = req?.Messages?.Count ?? 0;
-        ToolCount       = req?.Tools?.Count    ?? 0;
+        var req = UniversalRequestParser.TryParse(RequestBody);
+        Metadata        = req?.Metadata;
+        MessageCount    = req?.MessageCount ?? 0;
+        ToolCount       = req?.ToolCount    ?? 0;
         SessionIdentity = Metadata?.SessionId
                        ?? Metadata?.DeviceId
                        ?? Metadata?.RawUserId
                        ?? string.Empty;
         SessionColor    = SessionColorHelper.ColorFor(SessionIdentity);
+        RequestPreview  = req?.LastMessagePreview ?? ExtractLastMessagePreview(RequestBody);
     }
 
     public void ApplyResponse(LogEntry e)
@@ -149,15 +150,24 @@ public sealed class LogEntryViewModel
         try
         {
             using var doc = JsonDocument.Parse(body);
-            if (!doc.RootElement.TryGetProperty("messages", out var msgs)) return string.Empty;
-            if (msgs.ValueKind != JsonValueKind.Array || msgs.GetArrayLength() == 0) return string.Empty;
-
-            JsonElement last = default;
-            foreach (var m in msgs.EnumerateArray()) last = m;
-
-            return ExtractContent(last);
+            if (doc.RootElement.TryGetProperty("messages", out var msgs)
+                && msgs.ValueKind == JsonValueKind.Array && msgs.GetArrayLength() > 0)
+            {
+                JsonElement last = default;
+                foreach (var m in msgs.EnumerateArray()) last = m;
+                return ExtractContent(last);
+            }
+            // Fallback for simple string-content messages (OpenAI style)
+            if (doc.RootElement.TryGetProperty("messages", out var msgs2)
+                && msgs2.ValueKind == JsonValueKind.Array && msgs2.GetArrayLength() > 0)
+            {
+                var last = msgs2[msgs2.GetArrayLength() - 1];
+                if (last.TryGetProperty("content", out var c) && c.ValueKind == JsonValueKind.String)
+                    return Truncate(c.GetString() ?? string.Empty);
+            }
         }
-        catch { return string.Empty; }
+        catch { }
+        return string.Empty;
     }
 
     private static bool DetectToolUse(string body)
@@ -177,6 +187,21 @@ public sealed class LogEntryViewModel
                 foreach (var block in content.EnumerateArray())
                     if (block.TryGetProperty("type", out var t) && t.GetString() == "tool_use")
                         return true;
+            }
+            if (doc.RootElement.TryGetProperty("choices", out var choices)
+                && choices.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var choice in choices.EnumerateArray())
+                {
+                    if (choice.TryGetProperty("message", out var msg)
+                        && msg.TryGetProperty("tool_calls", out var tc)
+                        && tc.ValueKind == JsonValueKind.Array && tc.GetArrayLength() > 0)
+                        return true;
+                    if (choice.TryGetProperty("delta", out var delta)
+                        && delta.TryGetProperty("tool_calls", out var tc2)
+                        && tc2.ValueKind == JsonValueKind.Array && tc2.GetArrayLength() > 0)
+                        return true;
+                }
             }
         }
         catch { }
@@ -224,6 +249,10 @@ public sealed class LogEntryViewModel
                 {
                     if (choice.TryGetProperty("message", out var msg))
                         return ExtractContent(msg);
+                    if (choice.TryGetProperty("delta", out var delta)
+                        && delta.TryGetProperty("content", out var dc)
+                        && dc.ValueKind == JsonValueKind.String)
+                        return Truncate(dc.GetString() ?? string.Empty);
                 }
             }
         }

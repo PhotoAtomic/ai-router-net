@@ -2,7 +2,10 @@ using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using AiRouter.Conversion;
+using AiRouter.Conversion.Streaming;
 using AiRouter.Logging;
+using AiRouter.Protocol;
 using AiRouter.Serialization;
 
 namespace AiRouter.Routing;
@@ -11,6 +14,9 @@ class Router : IDisposable
 {
     private const string AnthropicHost = "api.anthropic.com";
     private const string MessagesPath = "/v1/messages";
+
+    private readonly IRequestConverter _requestConverter = new RequestConverter();
+    private readonly IResponseConverter _responseConverter = new ResponseConverter();
 
     // Headers that must not be forwarded from the client to the upstream
     private static readonly HashSet<string> SkippedRequestHeaders = new(StringComparer.OrdinalIgnoreCase)
@@ -81,6 +87,9 @@ class Router : IDisposable
         var requestTimestamp = DateTimeOffset.Now;
         var stopwatch = Stopwatch.StartNew();
 
+        // Detect the API format the client is speaking based on the request path.
+        var incomingFormat = DetectFormat(req.Path);
+
         // --- Read body -------------------------------------------------------
         string body;
         using (var sr = new StreamReader(req.Body, Encoding.UTF8, leaveOpen: true))
@@ -94,13 +103,32 @@ class Router : IDisposable
 
         // --- Find route (may be null) ----------------------------------------
         var rule = !string.IsNullOrEmpty(model) ? FindRule(snap, model) : snap.Rules.LastOrDefault();
-        var targetUrl = rule is not null ? rule.BaseUrl.TrimEnd('/') + ctx.Request.Path + ctx.Request.QueryString : null;
+        var targetFormat = rule?.TargetFormat ?? ApiFormat.Anthropic;
+
+        // Build target URL, rewriting the path when the upstream expects a different protocol.
+        string? targetUrl = null;
+        if (rule is not null)
+        {
+            var upstreamPath = ResolveUpstreamPath(req.Path, incomingFormat, targetFormat);
+            targetUrl = rule.BaseUrl.TrimEnd('/') + upstreamPath + ctx.Request.QueryString;
+        }
 
         // --- Apply ForceModel BEFORE logging the Request so the body we log --
         // matches what the upstream will actually receive. ---------------------
         if (rule is not null && !string.IsNullOrEmpty(rule.ForceModel) && !string.IsNullOrWhiteSpace(body))
         {
             body = ReplaceModel(body, rule.ForceModel);
+            requestSizeBytes = (long)Encoding.UTF8.GetByteCount(body);
+        }
+
+        // --- Convert request body if client and upstream protocols differ -----
+        ConversionContext? conversionContext = null;
+        if (rule is not null && incomingFormat != targetFormat && !string.IsNullOrWhiteSpace(body))
+        {
+            var (convertedBody, convCtx) = _requestConverter.Convert(body, incomingFormat, targetFormat);
+            body = convertedBody;
+            conversionContext = convCtx;
+            Console.WriteLine($"[convert] {incomingFormat}->{targetFormat} body: {body}");
             requestSizeBytes = (long)Encoding.UTF8.GetByteCount(body);
         }
 
@@ -360,6 +388,8 @@ class Router : IDisposable
         string responseBody;
         long responseSizeBytes;
 
+        bool needsConversion = incomingFormat != targetFormat;
+
         if (isStream)
         {
             res.Headers.ContentType = "text/event-stream";
@@ -368,14 +398,38 @@ class Router : IDisposable
 
             await using var upstreamStream = await upstreamRes.Content.ReadAsStreamAsync();
             var logBuffer = new MemoryStream();
-            var buffer = new byte[4096];
-            int bytesRead;
-            while ((bytesRead = await upstreamStream.ReadAsync(buffer, ctx.RequestAborted)) > 0)
+
+            try
             {
-                await res.Body.WriteAsync(buffer.AsMemory(0, bytesRead), ctx.RequestAborted);
-                await res.Body.FlushAsync(ctx.RequestAborted);
-                await logBuffer.WriteAsync(buffer.AsMemory(0, bytesRead), ctx.RequestAborted);
+                if (needsConversion)
+                {
+                    var parser = SseParser.ParseAsync(upstreamStream, logBuffer, ctx.RequestAborted);
+                    var converted = targetFormat == ApiFormat.Anthropic
+                        ? AnthropicToOpenAiStreamConverter.ConvertAsync(parser, conversionContext)
+                        : OpenAiToAnthropicStreamConverter.ConvertAsync(parser, ctx.RequestAborted, conversionContext);
+                    await SseWriter.WriteAsync(res.Body, converted, ctx.RequestAborted);
+                }
+                else
+                {
+                    var buffer = new byte[4096];
+                    int bytesRead;
+                    while ((bytesRead = await upstreamStream.ReadAsync(buffer, ctx.RequestAborted)) > 0)
+                    {
+                        await res.Body.WriteAsync(buffer.AsMemory(0, bytesRead), ctx.RequestAborted);
+                        await res.Body.FlushAsync(ctx.RequestAborted);
+                        await logBuffer.WriteAsync(buffer.AsMemory(0, bytesRead), ctx.RequestAborted);
+                    }
+                }
             }
+            catch (OperationCanceledException)
+            {
+                Console.WriteLine("[stream] Client or upstream connection canceled (expected on disconnect).");
+            }
+            catch (IOException ex)
+            {
+                Console.WriteLine($"[stream] I/O error during streaming: {ex.Message}");
+            }
+
             responseSizeBytes = logBuffer.Length;
             responseBody = Encoding.UTF8.GetString(logBuffer.ToArray());
         }
@@ -384,7 +438,17 @@ class Router : IDisposable
             var rawBytes = await upstreamRes.Content.ReadAsByteArrayAsync(ctx.RequestAborted);
             responseSizeBytes = rawBytes.LongLength;
             responseBody = Encoding.UTF8.GetString(rawBytes);
-            await res.Body.WriteAsync(rawBytes, ctx.RequestAborted);
+
+            if (needsConversion)
+            {
+                var convertedBody = _responseConverter.Convert(responseBody, targetFormat, incomingFormat, conversionContext);
+                var convertedBytes = Encoding.UTF8.GetBytes(convertedBody);
+                await res.Body.WriteAsync(convertedBytes, ctx.RequestAborted);
+            }
+            else
+            {
+                await res.Body.WriteAsync(rawBytes, ctx.RequestAborted);
+            }
         }
 
         // --- Log Response entry ----------------------------------------------
@@ -656,4 +720,31 @@ class Router : IDisposable
     }
 
     public void Dispose() { /* ProcessManagers are owned by ProcessRegistry */ }
+
+    // -------------------------------------------------------------------------
+    // Format detection & path rewriting
+    // -------------------------------------------------------------------------
+
+    private static ApiFormat DetectFormat(PathString path)
+    {
+        var p = path.Value?.ToLowerInvariant() ?? string.Empty;
+        if (p == "/v1/messages")
+            return ApiFormat.Anthropic;
+        if (p == "/v1/chat/completions")
+            return ApiFormat.OpenAI;
+        return ApiFormat.Anthropic; // default for unknown / generic paths
+    }
+
+    private static string ResolveUpstreamPath(PathString originalPath, ApiFormat incoming, ApiFormat target)
+    {
+        if (incoming == target)
+            return originalPath;
+
+        return target switch
+        {
+            ApiFormat.Anthropic => "/v1/messages",
+            ApiFormat.OpenAI    => "/v1/chat/completions",
+            _                   => originalPath,
+        };
+    }
 }

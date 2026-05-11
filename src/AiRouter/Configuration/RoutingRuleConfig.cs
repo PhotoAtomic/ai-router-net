@@ -20,4 +20,9 @@ public class RoutingRuleConfig
     // When true, the dashboard will treat BaseUrl as a llama.cpp server and
     // display currently-loaded models with the ability to unload them.
     public bool IsLLamaCpp { get; set; }
+
+    // Target API format of the upstream endpoint.
+    // "Anthropic" -> /v1/messages style (default).
+    // "OpenAI"    -> /v1/chat/completions style.
+    public string EndpointType { get; set; } = "Anthropic";
 }
