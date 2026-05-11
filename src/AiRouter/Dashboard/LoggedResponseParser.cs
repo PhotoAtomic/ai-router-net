@@ -343,51 +343,60 @@ public static class LoggedResponseParser
 
     private static ReconstructedResponse ReconstructFromSingle(JsonElement root)
     {
+        if (root.ValueKind != JsonValueKind.Object)
+            return new ReconstructedResponse();
+
+        // OpenAI non-streaming responses have "choices"; Anthropic have "type":"message" + "content" array.
+        if (root.TryGetProperty("choices", out var choices) && choices.ValueKind == JsonValueKind.Array)
+            return ReconstructOpenAiSingle(root);
+
+        return ReconstructAnthropicSingle(root);
+    }
+
+    private static ReconstructedResponse ReconstructAnthropicSingle(JsonElement root)
+    {
         string? id = null, model = null, role = null, stopReason = null;
         var text     = new StringBuilder();
         var thinking = new StringBuilder();
         var tools    = new List<ReconstructedToolUse>();
         long? inputTokens = null, outputTokens = null, cacheReadInputTokens = null;
 
-        if (root.ValueKind == JsonValueKind.Object)
+        if (root.TryGetProperty("id", out var pid))         id         = pid.GetString();
+        if (root.TryGetProperty("model", out var pm))       model      = pm.GetString();
+        if (root.TryGetProperty("role", out var pr))        role       = pr.GetString();
+        if (root.TryGetProperty("stop_reason", out var sr)) stopReason = sr.GetString();
+
+        if (root.TryGetProperty("usage", out var u))
         {
-            if (root.TryGetProperty("id", out var pid))         id         = pid.GetString();
-            if (root.TryGetProperty("model", out var pm))       model      = pm.GetString();
-            if (root.TryGetProperty("role", out var pr))        role       = pr.GetString();
-            if (root.TryGetProperty("stop_reason", out var sr)) stopReason = sr.GetString();
+            if (u.TryGetProperty("input_tokens",            out var it)) inputTokens          = it.GetInt64();
+            if (u.TryGetProperty("output_tokens",           out var ot)) outputTokens         = ot.GetInt64();
+            if (u.TryGetProperty("cache_read_input_tokens", out var cr)) cacheReadInputTokens = cr.GetInt64();
+        }
 
-            if (root.TryGetProperty("usage", out var u))
+        if (root.TryGetProperty("content", out var content) && content.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var block in content.EnumerateArray())
             {
-                if (u.TryGetProperty("input_tokens",            out var it)) inputTokens          = it.GetInt64();
-                if (u.TryGetProperty("output_tokens",           out var ot)) outputTokens         = ot.GetInt64();
-                if (u.TryGetProperty("cache_read_input_tokens", out var cr)) cacheReadInputTokens = cr.GetInt64();
-            }
-
-            if (root.TryGetProperty("content", out var content) && content.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var block in content.EnumerateArray())
+                if (!block.TryGetProperty("type", out var bt)) continue;
+                var btype = bt.GetString();
+                switch (btype)
                 {
-                    if (!block.TryGetProperty("type", out var bt)) continue;
-                    var btype = bt.GetString();
-                    switch (btype)
-                    {
-                        case "text":
-                            if (block.TryGetProperty("text", out var tt))
-                                text.Append(tt.GetString());
-                            break;
-                        case "thinking":
-                            if (block.TryGetProperty("thinking", out var th))
-                                thinking.Append(th.GetString());
-                            break;
-                        case "tool_use":
-                            tools.Add(new ReconstructedToolUse
-                            {
-                                Id    = block.TryGetProperty("id",    out var tid) ? tid.GetString() : null,
-                                Name  = block.TryGetProperty("name",  out var tn)  ? tn.GetString()  : null,
-                                Input = block.TryGetProperty("input", out var inp) ? PrettyPrint(inp) : string.Empty,
-                            });
-                            break;
-                    }
+                    case "text":
+                        if (block.TryGetProperty("text", out var tt))
+                            text.Append(tt.GetString());
+                        break;
+                    case "thinking":
+                        if (block.TryGetProperty("thinking", out var th))
+                            thinking.Append(th.GetString());
+                        break;
+                    case "tool_use":
+                        tools.Add(new ReconstructedToolUse
+                        {
+                            Id    = block.TryGetProperty("id",    out var tid) ? tid.GetString() : null,
+                            Name  = block.TryGetProperty("name",  out var tn)  ? tn.GetString()  : null,
+                            Input = block.TryGetProperty("input", out var inp) ? PrettyPrint(inp) : string.Empty,
+                        });
+                        break;
                 }
             }
         }
@@ -404,6 +413,74 @@ public static class LoggedResponseParser
             InputTokens          = inputTokens,
             OutputTokens         = outputTokens,
             CacheReadInputTokens = cacheReadInputTokens,
+        };
+    }
+
+    private static ReconstructedResponse ReconstructOpenAiSingle(JsonElement root)
+    {
+        string? id = null, model = null, stopReason = null;
+        var text = new StringBuilder();
+        var tools = new List<ReconstructedToolUse>();
+        long? inputTokens = null, outputTokens = null;
+
+        if (root.TryGetProperty("id", out var pid)) id = pid.GetString();
+        if (root.TryGetProperty("model", out var pm)) model = pm.GetString();
+
+        if (root.TryGetProperty("choices", out var choices) && choices.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var choice in choices.EnumerateArray())
+            {
+                if (choice.TryGetProperty("message", out var msg))
+                {
+                    if (msg.TryGetProperty("content", out var content) && content.ValueKind == JsonValueKind.String)
+                    {
+                        var s = content.GetString();
+                        if (!string.IsNullOrEmpty(s)) text.Append(s);
+                    }
+
+                    if (msg.TryGetProperty("tool_calls", out var tcArr) && tcArr.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var tc in tcArr.EnumerateArray())
+                        {
+                            var toolId = tc.TryGetProperty("id", out var tid) ? tid.GetString() : null;
+                            string? toolName = null;
+                            string? toolArgs = null;
+                            if (tc.TryGetProperty("function", out var fn))
+                            {
+                                if (fn.TryGetProperty("name", out var n)) toolName = n.GetString();
+                                if (fn.TryGetProperty("arguments", out var a)) toolArgs = a.GetString();
+                            }
+                            tools.Add(new ReconstructedToolUse
+                            {
+                                Id = toolId,
+                                Name = toolName,
+                                Input = toolArgs ?? string.Empty,
+                            });
+                        }
+                    }
+                }
+
+                if (choice.TryGetProperty("finish_reason", out var fr) && fr.ValueKind != JsonValueKind.Null)
+                    stopReason = fr.GetString();
+            }
+        }
+
+        if (root.TryGetProperty("usage", out var u))
+        {
+            if (u.TryGetProperty("prompt_tokens", out var pt)) inputTokens = pt.GetInt64();
+            if (u.TryGetProperty("completion_tokens", out var ct)) outputTokens = ct.GetInt64();
+        }
+
+        return new ReconstructedResponse
+        {
+            Id           = id,
+            Model        = model,
+            Role         = "assistant",
+            StopReason   = stopReason,
+            Text         = text.ToString(),
+            ToolUses     = tools,
+            InputTokens  = inputTokens,
+            OutputTokens = outputTokens,
         };
     }
 

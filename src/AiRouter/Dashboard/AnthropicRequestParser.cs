@@ -67,9 +67,54 @@ public static class AnthropicRequestParser
         if (string.IsNullOrWhiteSpace(json)) return null;
         try
         {
-            return JsonSerializer.Deserialize<AnthropicRequest>(json, _opts);
+            var req = JsonSerializer.Deserialize<AnthropicRequest>(json, _opts);
+            if (req is null) return null;
+
+            // The logged request body is the converted (upstream) payload.
+            // When upstream expects OpenAI, tools have name/description inside "function".
+            // If deserialization produced tools but all names are empty, fall back to OpenAI extraction.
+            if (req.Tools is { Count: > 0 } && req.Tools.All(t => string.IsNullOrEmpty(t.Name)))
+            {
+                req.Tools = ExtractToolsFromOpenAi(json);
+            }
+
+            return req;
         }
         catch { return null; }
+    }
+
+    private static List<AnthropicTool> ExtractToolsFromOpenAi(string json)
+    {
+        var tools = new List<AnthropicTool>();
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty("tools", out var toolsEl)
+                || toolsEl.ValueKind != JsonValueKind.Array)
+                return tools;
+
+            foreach (var tool in toolsEl.EnumerateArray())
+            {
+                string? name = null;
+                string? description = null;
+
+                if (tool.TryGetProperty("function", out var fn))
+                {
+                    if (fn.TryGetProperty("name", out var n)) name = n.GetString();
+                    if (fn.TryGetProperty("description", out var d)) description = d.GetString();
+                }
+                else
+                {
+                    // Plain Anthropic-style object (fallback)
+                    if (tool.TryGetProperty("name", out var n2)) name = n2.GetString();
+                    if (tool.TryGetProperty("description", out var d2)) description = d2.GetString();
+                }
+
+                tools.Add(new AnthropicTool { Name = name, Description = description });
+            }
+        }
+        catch { }
+        return tools;
     }
 
     // Returns the readable text from a message's content (string or block array).

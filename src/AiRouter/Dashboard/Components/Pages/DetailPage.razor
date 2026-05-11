@@ -85,26 +85,6 @@ else
             </div>
         }
 
-        <!-- ── Request messages ──────────────────────────────── -->
-        @if (anthropic?.Messages is { Count: > 0 })
-        {
-            <div style="@Card">
-                <details open style="margin:0;">
-                    <summary style="cursor:pointer; list-style:revert; margin:0 0 .75rem; font-size:1rem; color:#90cdf4; font-weight:600;">
-                        Messages (@anthropic.Messages.Count)
-                    </summary>
-                    @foreach (var msg in anthropic.Messages)
-                    {
-                        var roleColor = msg.Role == "assistant" ? "#90cdf4" : "#68d391";
-                        <div style="margin-bottom:.75rem; border-left:3px solid @roleColor; padding-left:.75rem;">
-                            <div style="font-size:.75rem; color:@roleColor; margin-bottom:.35rem; font-weight:600;">@msg.Role</div>
-                            @RenderContentBlocks(msg.Content)
-                        </div>
-                    }
-                </details>
-            </div>
-        }
-
         <!-- ── Response body ─────────────────────────────────── -->
         <div style="@Card">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:.75rem;">
@@ -196,6 +176,26 @@ else
                 <p style="color:#718096; margin:0;">— waiting for response —</p>
             }
         </div>
+
+        <!-- ── Request messages ──────────────────────────────── -->
+        @if (anthropic?.Messages is { Count: > 0 })
+        {
+            <div style="@Card">
+                <details open style="margin:0;">
+                    <summary style="cursor:pointer; list-style:revert; margin:0 0 .75rem; font-size:1rem; color:#90cdf4; font-weight:600;">
+                        Messages (@anthropic.Messages.Count)
+                    </summary>
+                    @foreach (var msg in anthropic.Messages.AsEnumerable().Reverse())
+                    {
+                        var roleColor = msg.Role == "assistant" ? "#90cdf4" : "#68d391";
+                        <div style="margin-bottom:.75rem; border-left:3px solid @roleColor; padding-left:.75rem;">
+                            <div style="font-size:.75rem; color:@roleColor; margin-bottom:.35rem; font-weight:600;">@msg.Role</div>
+                            @RenderContentBlocks(msg.Content)
+                        </div>
+                    }
+                </details>
+            </div>
+        }
 
         <!-- ── Request headers ───────────────────────────────── -->
         <div style="@Card">

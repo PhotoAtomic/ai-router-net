@@ -160,17 +160,17 @@ else
                             <input type="checkbox" checked="@isSelected"
                                    @onchange="() => ToggleRow(vm.CorrelationId)" />
                         </td>
-                        <td style="@Td; cursor:pointer;" @onclick="() => GoDetail(vm)">@vm.RequestTimestamp.LocalDateTime.ToString("HH:mm:ss")</td>
+                        <td style="@Td; font-family:monospace; cursor:pointer;" @onclick="() => GoDetail(vm)">@vm.RequestTimestamp.LocalDateTime.ToString("HH:mm:ss")</td>
                         <td style="@Td; font-family:monospace; cursor:pointer;" @onclick="() => GoDetail(vm)">@vm.Model</td>
                         <td style="@Td; font-family:monospace; cursor:pointer;" @onclick="() => GoDetail(vm)">@vm.ForcedModel</td>
                         <td style="@Td; cursor:pointer;" @onclick="() => GoDetail(vm)">@vm.MatchedRule</td>
                         <td style="@Td; max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer;" title="@vm.TargetUrl" @onclick="() => GoDetail(vm)">@vm.TargetUrl</td>
                         @if (vm.HasResponse)
                         {
-                            <td style="@Td; color:@StatusColor(vm.StatusCode); cursor:pointer;" @onclick="() => GoDetail(vm)">@vm.StatusCode</td>
-                            <td style="@Td; color:@HeatColor(vm.DurationMs, maxDur); cursor:pointer;" @onclick="() => GoDetail(vm)">@($"{vm.DurationMs / 1000.0:F3} s")</td>
-                            <td style="@Td; color:@HeatColor(vm.RequestBytes, maxReq); cursor:pointer;" @onclick="() => GoDetail(vm)">@FormatBytes(vm.RequestBytes)</td>
-                            <td style="@Td; color:@HeatColor(vm.ResponseBytes, maxResp); cursor:pointer;" @onclick="() => GoDetail(vm)">@FormatBytes(vm.ResponseBytes)</td>
+                            <td style="@Td; font-family:monospace; color:@StatusColor(vm.StatusCode); cursor:pointer;" @onclick="() => GoDetail(vm)">@vm.StatusCode</td>
+                            <td style="@Td; font-family:monospace; color:@HeatColor(vm.DurationMs, maxDur); cursor:pointer;" @onclick="() => GoDetail(vm)">@($"{vm.DurationMs / 1000.0:F3} s")</td>
+                            <td style="@Td; font-family:monospace; color:@HeatColor(vm.RequestBytes, maxReq); cursor:pointer;" @onclick="() => GoDetail(vm)">@FormatBytes(vm.RequestBytes)</td>
+                            <td style="@Td; font-family:monospace; color:@HeatColor(vm.ResponseBytes, maxResp); cursor:pointer;" @onclick="() => GoDetail(vm)">@FormatBytes(vm.ResponseBytes)</td>
                             <td style="@Td; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#a0aec0; cursor:pointer;" title="@vm.RequestPreview" @onclick="() => GoDetail(vm)">@vm.RequestPreview</td>
                             <td style="@Td; text-align:right; font-family:monospace; cursor:pointer;" @onclick="() => GoDetail(vm)">@(vm.MessageCount > 0 ? vm.MessageCount.ToString() : string.Empty)</td>
                             <td style="@Td; text-align:right; font-family:monospace; cursor:pointer;" @onclick="() => GoDetail(vm)">@(vm.ToolCount > 0 ? vm.ToolCount.ToString() : string.Empty)</td>
@@ -181,13 +181,13 @@ else
                         else
                         {
                             <td style="@Td; color:#718096; cursor:pointer;" title="Waiting for response…" @onclick="() => GoDetail(vm)">⏳</td>
-                            <td style="@Td; color:#718096; cursor:pointer;" @onclick="() => GoDetail(vm)">—</td>
-                            <td style="@Td; color:@HeatColor(vm.RequestBytes, maxReq); cursor:pointer;" @onclick="() => GoDetail(vm)">@FormatBytes(vm.RequestBytes)</td>
-                            <td style="@Td; color:#718096; cursor:pointer;" @onclick="() => GoDetail(vm)">—</td>
+                            <td style="@Td; color:#f6e05e; font-family:monospace; cursor:pointer;" @onclick="() => GoDetail(vm)">@($"{(DateTimeOffset.UtcNow - vm.RequestTimestamp).TotalMilliseconds / 1000.0:F3}" + " s")</td>
+                            <td style="@Td; font-family:monospace; color:@HeatColor(vm.RequestBytes, maxReq); cursor:pointer;" @onclick="() => GoDetail(vm)">@FormatBytes(vm.RequestBytes)</td>
+                            <td style="@Td; font-family:monospace; color:#718096; cursor:pointer;" @onclick="() => GoDetail(vm)">—</td>
                             <td style="@Td; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#a0aec0; cursor:pointer;" title="@vm.RequestPreview" @onclick="() => GoDetail(vm)">@vm.RequestPreview</td>
                             <td style="@Td; text-align:right; font-family:monospace; cursor:pointer;" @onclick="() => GoDetail(vm)">@(vm.MessageCount > 0 ? vm.MessageCount.ToString() : string.Empty)</td>
                             <td style="@Td; text-align:right; font-family:monospace; cursor:pointer;" @onclick="() => GoDetail(vm)">@(vm.ToolCount > 0 ? vm.ToolCount.ToString() : string.Empty)</td>
-                            <td style="@Td; color:#718096; cursor:pointer;" @onclick="() => GoDetail(vm)">—</td>
+                            <td style="@Td; font-family:monospace; color:#718096; cursor:pointer;" @onclick="() => GoDetail(vm)">—</td>
                             <td style="@Td;" @onclick="() => GoDetail(vm)"></td>
                             <td style="@Td;" @onclick="() => GoDetail(vm)"></td>
                         }
@@ -221,9 +221,9 @@ else
                     <td style="@Td"></td>
                     <td style="@Td"></td>
                     <td style="@Td"></td>
-                    <td style="@Td; color:@(anyInFlight ? "#f6e05e" : "#90cdf4");" title="@(anyInFlight ? "Live – includes in-flight requests" : "Completed requests only")">@($"{totalDurMs / 1000.0:F3} s")@(anyInFlight ? " ⚡" : string.Empty)</td>
-                    <td style="@Td">@FormatBytes(totalReqBytes)</td>
-                    <td style="@Td">@FormatBytes(totalRespBytes)</td>
+                    <td style="@Td; font-family:monospace; color:@(anyInFlight ? "#f6e05e" : "#90cdf4");" title="@(anyInFlight ? "Live – includes in-flight requests" : "Completed requests only")">@($"{totalDurMs / 1000.0:F3} s")@(anyInFlight ? " ⚡" : string.Empty)</td>
+                    <td style="@Td; font-family:monospace;">@FormatBytes(totalReqBytes)</td>
+                    <td style="@Td; font-family:monospace;">@FormatBytes(totalRespBytes)</td>
                     <td style="@Td"></td>
                     <td style="@Td"></td>
                     <td style="@Td"></td>
