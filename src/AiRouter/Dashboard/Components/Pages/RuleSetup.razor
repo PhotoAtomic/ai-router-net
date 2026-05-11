@@ -34,9 +34,9 @@ else
                     <th style="@Th">Pattern</th>
                     <th style="@Th">Format</th>
                     <th style="@Th">BaseUrl</th>
-                    <th style="@Th">Force Model</th>
                     <th style="@Th; width:140px;">Enable LlamaCpp Recover</th>
                     <th style="@Th; width:120px;">Is LlamaCpp</th>
+                    <th style="@Th">Force Model</th>
                     <th style="@Th">Process FileName</th>
                     <th style="@Th">Process Arguments</th>
                     <th style="@Th; width:120px;">Startup Delay (s)</th>
@@ -102,18 +102,38 @@ else
                         <td style="@Td">
                             @if (isEditing)
                             {
+                                <input type="checkbox" checked="@editRule!.EnableLLamaCppModelRecover" @onchange="@(e => { editRule.EnableLLamaCppModelRecover = (bool)e.Value!; StateHasChanged(); })" />
+                            }
+                            else
+                            {
+                                <input type="checkbox" checked="@rule.EnableLLamaCppModelRecover" disabled="true" />
+                            }
+                        </td>
+                        <td style="@Td">
+                            @if (isEditing)
+                            {
+                                <input type="checkbox" checked="@editRule!.IsLLamaCpp" @onchange="@(e => { editRule.IsLLamaCpp = (bool)e.Value!; StateHasChanged(); })" />
+                            }
+                            else
+                            {
+                                <input type="checkbox" checked="@rule.IsLLamaCpp" disabled="true" />
+                            }
+                        </td>
+                        <td style="@Td">
+                            @if (isEditing)
+                            {
                                 @if (editRule!.IsLLamaCpp)
                                 {
-                                    <div style="position:relative;">
+                                    <div style="position:relative;" @key="1">
                                         <input value="@editRule!.ForceModel"
-                                               @onclick="@(e => ToggleDropdown(idx))"
+                                               @onclick="@(async e => await ToggleDropdownAsync(idx))"
                                                @oninput="@(e => HandleForceModelInput(idx, e.Value?.ToString() ?? ""))"
-                                               style="@InputStyle; width:100%;"
+                                               style="@InputStyle; width:100%; cursor:pointer;"
                                                placeholder="Select or type model" />
                                         @if (_expandedDropdowns.Contains(idx))
                                         {
                                             <div style="position:absolute; top:100%; left:0; right:0; background:#1a202c; border:1px solid #4a5568; border-radius:6px; max-height:200px; overflow-y:auto; z-index:10;">
-                                                @foreach (var model in GetAvailableModels(editRule!.BaseUrl))
+                                                @foreach (var model in GetInlineModels(idx, editRule!.BaseUrl))
                                                 {
                                                     <div style="padding:.4rem .75rem; cursor:pointer; transition:background .1s;"
                                                          @onclick="@(e => SelectModel(idx, model))"
@@ -122,7 +142,7 @@ else
                                                         @model
                                                     </div>
                                                 }
-                                                @if (!string.IsNullOrEmpty(editRule!.ForceModel) && !GetAvailableModels(editRule!.BaseUrl).Contains(editRule!.ForceModel))
+                                                @if (!string.IsNullOrEmpty(editRule!.ForceModel) && !GetInlineModels(idx, editRule!.BaseUrl).Contains(editRule!.ForceModel))
                                                 {
                                                     <div style="padding:.4rem .75rem; cursor:pointer; transition:background .1s; background:#2d3748;"
                                                          @onclick="@(e => SelectModel(idx, editRule!.ForceModel))"
@@ -137,7 +157,8 @@ else
                                 }
                                 else
                                 {
-                                    <input value="@editRule!.ForceModel"
+                                    <input @key="0"
+                                           value="@editRule!.ForceModel"
                                            @oninput="@(e => HandleForceModelInput(idx, e.Value?.ToString() ?? ""))"
                                            style="@InputStyle" placeholder="optional" />
                                 }
@@ -146,12 +167,6 @@ else
                             {
                                 <span style="color:#a0aec0;">@(string.IsNullOrEmpty(rule.ForceModel) ? "—" : rule.ForceModel)</span>
                             }
-                        </td>
-                        <td style="@Td">
-                            <input type="checkbox" checked="@rule.EnableLLamaCppModelRecover" disabled="true" />
-                        </td>
-                        <td style="@Td">
-                            <input type="checkbox" checked="@rule.IsLLamaCpp" disabled="true" />
                         </td>
                         <td style="@Td">
                             @if (isEditing)
@@ -219,12 +234,6 @@ else
                 }
             </div>
             <div>
-                <label style="display:block; font-size:.75rem; color:#718096; margin-bottom:.35rem;">BaseUrl</label>
-                <input value="@_newRule.BaseUrl"
-                       @oninput="@(e => HandleNewRuleBaseUrlInput(e.Value?.ToString() ?? ""))"
-                       style="@InputStyle; width:100%;" placeholder="e.g., http://localhost:8080/v1" />
-            </div>
-            <div>
                 <label style="display:block; font-size:.75rem; color:#718096; margin-bottom:.35rem;">Endpoint Format</label>
                 <select value="@_newRule.EndpointType"
                         @onchange="@(e => HandleNewRuleEndpointTypeInput(e.Value?.ToString() ?? "Anthropic"))"
@@ -234,19 +243,33 @@ else
                 </select>
             </div>
             <div>
+                <label style="display:block; font-size:.75rem; color:#718096; margin-bottom:.35rem;">BaseUrl</label>
+                <input value="@_newRule.BaseUrl"
+                       @oninput="@(e => HandleNewRuleBaseUrlInput(e.Value?.ToString() ?? ""))"
+                       style="@InputStyle; width:100%;" placeholder="e.g., http://localhost:8080/v1" />
+            </div>
+            <div>
+                <label style="display:block; font-size:.75rem; color:#718096; margin-bottom:.35rem;">Enable LlamaCpp Recover</label>
+                <input type="checkbox" checked="@_newRule.EnableLLamaCppModelRecover" @onchange="@(e => { _newRule.EnableLLamaCppModelRecover = (bool)e.Value!; StateHasChanged(); })" />
+            </div>
+            <div>
+                <label style="display:block; font-size:.75rem; color:#718096; margin-bottom:.35rem;">Is LlamaCpp</label>
+                <input type="checkbox" checked="@_newRule.IsLLamaCpp" @onchange="@(e => { _newRule.IsLLamaCpp = (bool)e.Value!; StateHasChanged(); })" />
+            </div>
+            <div>
                 <label style="display:block; font-size:.75rem; color:#718096; margin-bottom:.35rem;">Force Model (optional)</label>
                 @if (_newRule.IsLLamaCpp)
                 {
-                    <div style="position:relative;">
+                    <div style="position:relative;" @key="1">
                         <input value="@_newRule.ForceModel"
-                               @onclick="e => ToggleNewRuleDropdown()"
+                               @onclick="async e => await ToggleNewRuleDropdownAsync()"
                                @oninput="@(e => HandleNewRuleForceModelInput(e.Value?.ToString()))"
-                               style="@InputStyle; width:100%;"
+                               style="@InputStyle; width:100%; cursor:pointer;"
                                placeholder="Select or type model" />
                         @if (_newRuleDropdownExpanded)
                         {
                             <div style="position:absolute; top:100%; left:0; right:0; background:#1a202c; border:1px solid #4a5568; border-radius:6px; max-height:200px; overflow-y:auto; z-index:10;">
-                                @foreach (var model in GetAvailableModels(_newRule.BaseUrl))
+                                @foreach (var model in _newRuleAvailableModels)
                                 {
                                     <div style="padding:.4rem .75rem; cursor:pointer; transition:background .1s;"
                                          @onclick="e => SelectNewRuleModel(model)"
@@ -255,7 +278,7 @@ else
                                         @model
                                     </div>
                                 }
-                                @if (!string.IsNullOrEmpty(_newRule.ForceModel) && !GetAvailableModels(_newRule.BaseUrl).Contains(_newRule.ForceModel))
+                                @if (!string.IsNullOrEmpty(_newRule.ForceModel) && !_newRuleAvailableModels.Contains(_newRule.ForceModel))
                                 {
                                     <div style="padding:.4rem .75rem; cursor:pointer; transition:background .1s; background:#2d3748;"
                                          @onclick="e => SelectNewRuleModel(_newRule.ForceModel)"
@@ -270,7 +293,8 @@ else
                 }
                 else
                 {
-                    <input value="@_newRule.ForceModel"
+                    <input @key="0"
+                           value="@_newRule.ForceModel"
                            @oninput="@(e => HandleNewRuleForceModelInput(e.Value?.ToString()))"
                            style="@InputStyle; width:100%;" placeholder="e.g., qwen36-dense" />
                 }
@@ -294,7 +318,7 @@ else
                        style="@InputStyle; width:100%;" min="0" max="3600" />
             </div>
             <div style="display:flex; align-items:flex-end;">
-                <button @onclick="AddNewRuleConfirm" style="@ButtonStyle; background:#38a169; border-color:#48bb78; color:white; width:100%;" disabled="!_newRule.IsValidPattern()">
+                <button @onclick="AddNewRuleConfirm" style="@ButtonStyle; background:#38a169; border-color:#48bb78; color:white; width:100%;" disabled="@(!_newRule.IsValidPattern())">
                     Add Rule
                 </button>
             </div>
@@ -310,6 +334,9 @@ else
     HashSet<int> _expandedDropdowns = new();
     bool _newRuleDropdownExpanded = false;
     Microsoft.AspNetCore.Components.ElementReference _tableContainer;
+
+    Dictionary<int, List<string>> _inlineAvailableModels = new();
+    List<string> _newRuleAvailableModels = new();
 
     protected override void OnInitialized()
     {
@@ -486,13 +513,32 @@ else
 
     // ── Dropdown handling ─────────────────────────────────────────
 
-    void ToggleDropdown(int index)
+    async Task ToggleDropdownAsync(int index)
     {
         if (_expandedDropdowns.Contains(index))
+        {
             _expandedDropdowns.Remove(index);
+        }
         else
+        {
+            if (_editingRules.TryGetValue(index, out var editRule) && editRule.IsLLamaCpp)
+            {
+                if (!_inlineAvailableModels.TryGetValue(index, out var models) || models.Count == 0)
+                {
+                    models = (await LlamaMonitor.FetchModelsAsync(editRule.BaseUrl)).ToList();
+                    _inlineAvailableModels[index] = models;
+                }
+            }
             _expandedDropdowns.Add(index);
+        }
         StateHasChanged();
+    }
+
+    List<string> GetInlineModels(int index, string baseUrl)
+    {
+        if (_inlineAvailableModels.TryGetValue(index, out var models))
+            return models;
+        return GetAvailableModels(baseUrl);
     }
 
     void SelectModel(int index, string model)
@@ -565,8 +611,15 @@ else
         StateHasChanged();
     }
 
-    void ToggleNewRuleDropdown()
+    async Task ToggleNewRuleDropdownAsync()
     {
+        if (!_newRuleDropdownExpanded && _newRule.IsLLamaCpp)
+        {
+            if (_newRuleAvailableModels.Count == 0)
+            {
+                _newRuleAvailableModels = (await LlamaMonitor.FetchModelsAsync(_newRule.BaseUrl)).ToList();
+            }
+        }
         _newRuleDropdownExpanded = !_newRuleDropdownExpanded;
         StateHasChanged();
     }

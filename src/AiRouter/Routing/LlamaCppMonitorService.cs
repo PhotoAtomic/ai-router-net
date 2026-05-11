@@ -130,6 +130,39 @@ internal sealed class LlamaCppMonitorService : IDisposable
         return true;
     }
 
+    /// <summary>Fetch models directly from a baseUrl (used by the dashboard when a rule is not yet saved).</summary>
+    public async Task<IReadOnlyList<string>> FetchModelsAsync(string baseUrl, CancellationToken ct = default)
+    {
+        baseUrl = baseUrl.TrimEnd('/');
+        try
+        {
+            using var resp = await _http.GetAsync($"{baseUrl}/models", ct);
+            if (!resp.IsSuccessStatusCode) return [];
+
+            await using var stream = await resp.Content.ReadAsStreamAsync();
+            using var doc = await JsonDocument.ParseAsync(stream);
+
+            var models = new List<string>();
+            if (doc.RootElement.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in data.EnumerateArray())
+                {
+                    if (item.TryGetProperty("id", out var idEl))
+                    {
+                        var id = idEl.GetString();
+                        if (!string.IsNullOrEmpty(id))
+                            models.Add(id);
+                    }
+                }
+            }
+            return models;
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
     private async Task PollAsync()
     {
         List<string> urlsSnapshot;
