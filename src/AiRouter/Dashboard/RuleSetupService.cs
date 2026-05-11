@@ -26,37 +26,13 @@ public static class RoutingRuleConfigExtensions
         }
     }
 
-    /// <summary>Validate that a process filename exists on disk</summary>
+    /// <summary>Validate that a process filename is non-empty</summary>
     public static bool IsValidFileName(this ProcessConfig process)
     {
         if (process is null)
             return true; // No process is valid
 
-        var fileName = process.FileName;
-        if (string.IsNullOrWhiteSpace(fileName))
-            return false;
-
-        // Check if it's a full path or just a filename
-        if (Path.IsPathRooted(fileName))
-            return File.Exists(fileName);
-
-        // Check in current directory and PATH
-        if (File.Exists(fileName))
-            return true;
-
-        // Check PATH
-        var pathEnv = Environment.GetEnvironmentVariable("PATH") ?? "";
-        foreach (var pathDir in pathEnv.Split(Path.PathSeparator))
-        {
-            if (Directory.Exists(pathDir))
-            {
-                var fullPath = Path.Combine(pathDir, fileName);
-                if (File.Exists(fullPath))
-                    return true;
-            }
-        }
-
-        return false;
+        return !string.IsNullOrWhiteSpace(process.FileName);
     }
 }
 

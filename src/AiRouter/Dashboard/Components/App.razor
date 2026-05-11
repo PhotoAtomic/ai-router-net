@@ -16,5 +16,20 @@
 <body>
     <Routes @rendermode="@Microsoft.AspNetCore.Components.Web.RenderMode.InteractiveServer" />
     <script src="_framework/blazor.server.js"></script>
+    <script>
+        window.aiRouter = {
+            scrollToBottom: function(el) {
+                if (el) el.scrollTop = el.scrollHeight;
+            },
+            initLogScroll: function(preId, dotNetHelper) {
+                var pre = document.getElementById(preId);
+                if (!pre) return;
+                pre.onscroll = function() {
+                    var isAtBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 5;
+                    dotNetHelper.invokeMethodAsync('OnLogScroll', isAtBottom);
+                };
+            }
+        };
+    </script>
 </body>
 </html>

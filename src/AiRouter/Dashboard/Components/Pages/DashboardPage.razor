@@ -21,12 +21,17 @@
                 <div style="flex:1; min-width:0;">
                     <div style="display:flex; align-items:center; gap:.5rem; flex-wrap:wrap;">
                         <span style="font-family:monospace; font-size:.8rem; color:#a0aec0; padding:.25rem 0; min-width:0; word-break:break-all;">@baseUrl</span>
-                        @if (LlamaMonitor.IsProcessOwned(baseUrl.TrimEnd('/')))
+                        @if (IsOwnedAndAlive(baseUrl.TrimEnd('/')))
                         {
                             <button @onclick="() => TerminateProcessAsync(baseUrl.TrimEnd('/'))"
                                     title="Terminate process for this server"
                                     style="@TerminateBtnStyle">
                                 Terminate
+                            </button>
+                            <button @onclick="() => ShowLogs(baseUrl.TrimEnd('/'))"
+                                    title="Show process logs"
+                                    style="@LogBtnStyle">
+                                Logs
                             </button>
                         }
                     </div>
@@ -241,6 +246,26 @@ else
     </p>
 }
 
+<!-- ── Process Log Popup ─────────────────────────────────────── -->
+@if (_showLogPopup)
+{
+    <div style="position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,.6); z-index:100; display:flex; align-items:center; justify-content:center;">
+        <div style="background:#1a202c; border:1px solid #2d3748; border-radius:8px; width:90vw; max-width:900px; height:80vh; display:flex; flex-direction:column; padding:1rem;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:.5rem;">
+                <h3 style="margin:0; font-size:1rem; color:#90cdf4;">Process Logs — @_activeLogBaseUrl</h3>
+                <div style="display:flex; gap:.5rem; align-items:center;">
+                    @if (!_followLogs)
+                    {
+                        <button @onclick="ResumeFollow" style="background:#2b6cb0; border:1px solid #3182ce; color:white; border-radius:4px; padding:.25rem .6rem; cursor:pointer; font-size:.75rem; font-weight:500;">Follow logs</button>
+                    }
+                    <button @onclick="CloseLogPopup" style="background:none; border:none; color:#a0aec0; cursor:pointer; font-size:1.25rem;">&times;</button>
+                </div>
+            </div>
+            <pre @ref="_logPre" id="log-pre" style="flex:1; overflow:auto; background:#0d1117; color:#e2e8f0; padding:.75rem; border-radius:6px; font-size:.78rem; line-height:1.4; margin:0;">@string.Join("\n", _activeLogs)</pre>
+        </div>
+    </div>
+}
+
 @code {
     [Inject] NavigationManager Nav { get; set; } = default!;
 
@@ -250,6 +275,15 @@ else
     string _filterEndpoint = string.Empty;
 
     Timer? _liveTimer;
+
+    // Log popup state
+    bool _showLogPopup;
+    string _activeLogBaseUrl = string.Empty;
+    List<string> _activeLogs = new();
+    AiRouter.Process.ProcessManager? _activeLogManager;
+    bool _followLogs = true;
+    ElementReference _logPre;
+    Microsoft.JSInterop.DotNetObjectReference<DashboardPage>? _logScrollRef;
     readonly HashSet<Guid> _selected = new();
     Microsoft.AspNetCore.Components.ElementReference _tableContainer;
 
@@ -268,6 +302,13 @@ else
         Watcher.Changed -= OnChanged;
         LlamaMonitor.Changed -= OnChanged;
         _liveTimer?.Dispose();
+
+        if (_activeLogManager is not null)
+        {
+            _activeLogManager.LogReceived -= OnLogReceived;
+            _activeLogManager = null;
+        }
+        _logScrollRef?.Dispose();
     }
 
     async Task UnloadModelAsync(string baseUrl, string modelId)
@@ -288,6 +329,74 @@ else
             await Task.Delay(500);
             InvokeAsync(StateHasChanged);
         }
+    }
+
+    bool IsOwnedAndAlive(string baseUrl)
+    {
+        var config = LlamaMonitor.GetProcessConfig(baseUrl);
+        if (config is null) return false;
+        var mgr = Registry.GetManager(config);
+        return mgr?.IsAlive == true && mgr.IsOwned;
+    }
+
+    void ShowLogs(string baseUrl)
+    {
+        var config = LlamaMonitor.GetProcessConfig(baseUrl);
+        if (config is null) return;
+        var mgr = Registry.GetManager(config);
+        if (mgr is null) return;
+
+        _activeLogBaseUrl = baseUrl;
+        _activeLogManager = mgr;
+        _activeLogs = new List<string>(mgr.GetLogs());
+        _followLogs = true;
+        mgr.LogReceived += OnLogReceived;
+        _showLogPopup = true;
+        _logScrollRef = Microsoft.JSInterop.DotNetObjectReference.Create(this);
+        _ = JS.InvokeVoidAsync("aiRouter.initLogScroll", "log-pre", _logScrollRef);
+        StateHasChanged();
+    }
+
+    void CloseLogPopup()
+    {
+        if (_activeLogManager is not null)
+        {
+            _activeLogManager.LogReceived -= OnLogReceived;
+            _activeLogManager = null;
+        }
+        _logScrollRef?.Dispose();
+        _logScrollRef = null;
+        _showLogPopup = false;
+    }
+
+    void ResumeFollow()
+    {
+        _followLogs = true;
+        _ = JS.InvokeVoidAsync("aiRouter.scrollToBottom", _logPre);
+    }
+
+    [Microsoft.JSInterop.JSInvokable]
+    public void OnLogScroll(bool isAtBottom)
+    {
+        _followLogs = isAtBottom;
+        InvokeAsync(StateHasChanged);
+    }
+
+    void OnLogReceived()
+    {
+        InvokeAsync(async () =>
+        {
+            if (_activeLogManager is not null)
+            {
+                _activeLogs = new List<string>(_activeLogManager.GetLogs());
+                StateHasChanged();
+                if (_followLogs)
+                {
+                    await Task.Delay(50);
+                    await JS.InvokeVoidAsync("aiRouter.scrollToBottom", _logPre);
+                }
+            }
+        });
     }
 
     void ClearFilters()
@@ -398,5 +507,6 @@ else
     const string InputStyle = "background:#1a202c; border:1px solid #2d3748; color:#e2e8f0; border-radius:6px; padding:.4rem .75rem; font-size:.85rem; min-width:140px;";
     const string ButtonStyle= "background:#2d3748; border:1px solid #4a5568; color:#e2e8f0; border-radius:6px; padding:.4rem .9rem; cursor:pointer; font-size:.85rem;";
     const string TerminateBtnStyle = "background:#c53030; border:1px solid #e53e3e; color:white; border-radius:4px; padding:.25rem .75rem; cursor:pointer; font-size:.75rem; font-weight:500; white-space:nowrap;";
+    const string LogBtnStyle = "background:#2b6cb0; border:1px solid #3182ce; color:white; border-radius:4px; padding:.25rem .75rem; cursor:pointer; font-size:.75rem; font-weight:500; white-space:nowrap;";
 }
 

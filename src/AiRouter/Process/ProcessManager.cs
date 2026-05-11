@@ -8,17 +8,52 @@ namespace AiRouter.Process;
 class ProcessManager : IDisposable
 {
     private readonly ProcessConfig _cfg;
-    private readonly string _label; // used in log output
     private readonly SemaphoreSlim _lock = new(1, 1);
     private System.Diagnostics.Process? _process;
     // True when we attached to an already-running OS process rather than launching it.
     // A pre-existing process must never be killed by the router.
-    private bool _wasPreExisting;
+    // Default to true so that IsOwned is false until we have actually launched
+    // the process ourselves. This prevents the dashboard from showing Terminate/
+    // Logs buttons for processes that have not yet been scanned.
+    private bool _wasPreExisting = true;
 
-    public ProcessManager(ProcessConfig cfg, string label)
+    private readonly List<string> _logLines = new();
+    private readonly Lock _logLock = new();
+    internal event Action? LogReceived;
+
+    internal IReadOnlyList<string> GetLogs()
+    {
+        lock (_logLock) return _logLines.ToList();
+    }
+
+    private void AppendLog(string line)
+    {
+        lock (_logLock)
+        {
+            _logLines.Add(line);
+            if (_logLines.Count > 2000)
+                _logLines.RemoveAt(0);
+        }
+        LogReceived?.Invoke();
+    }
+
+    private string LogPrefix
+    {
+        get
+        {
+            try
+            {
+                if (_process is not null && !_process.HasExited)
+                    return $"PID {_process.Id}";
+            }
+            catch { }
+            return Path.GetFileName(_cfg.FileName);
+        }
+    }
+
+    public ProcessManager(ProcessConfig cfg)
     {
         _cfg = cfg;
-        _label = label;
     }
 
     // Ensures the process is running, starting/restarting if necessary.
@@ -29,23 +64,23 @@ class ProcessManager : IDisposable
         await _lock.WaitAsync(ct);
         try
         {
-            Console.WriteLine($"[proc:{_label}] EnsureRunningAsync entered. IsAlive={IsAlive}, hasHandle={_process is not null}, wasPreExisting={_wasPreExisting}.");
-            if (IsAlive) { Console.WriteLine($"[proc:{_label}] Already alive (PID {_process!.Id}); skipping start."); return; }
+            Console.WriteLine($"[proc:{LogPrefix}] EnsureRunningAsync entered. IsAlive={IsAlive}, hasHandle={_process is not null}, wasPreExisting={_wasPreExisting}.");
+            if (IsAlive) { Console.WriteLine($"[proc:{LogPrefix}] Already alive (PID {_process!.Id}); skipping start."); return; }
 
             // Clean up any dead handle (only if we owned it)
             if (_process is not null)
             {
                 if (_wasPreExisting)
-                    Console.WriteLine($"[proc:{_label}] Pre-existing process exited — will try to find/start a new one.");
+                    Console.WriteLine($"[proc:{LogPrefix}] Pre-existing process exited — will try to find/start a new one.");
                 else
-                    Console.WriteLine($"[proc:{_label}] Process exited (code {SafeExitCode()}), restarting…");
+                    Console.WriteLine($"[proc:{LogPrefix}] Process exited (code {SafeExitCode()}), restarting…");
                 _process.Dispose();
                 _process = null;
                 _wasPreExisting = false;
             }
 
             // Check if the process is already running on the system.
-            Console.WriteLine($"[proc:{_label}] Scanning OS for an existing process matching '{_cfg.FileName} {_cfg.Arguments}'…");
+            Console.WriteLine($"[proc:{LogPrefix}] Scanning OS for an existing process matching '{_cfg.FileName} {_cfg.Arguments}'…");
             // The WMI query can occasionally hang (slow/locked WMI service);
             // run it on a background task with a hard timeout so we never
             // block EnsureRunningAsync indefinitely. On timeout we proceed as
@@ -60,12 +95,12 @@ class ProcessManager : IDisposable
             }
             else
             {
-                Console.WriteLine($"[proc:{_label}] WMI scan exceeded {scanTimeout.TotalSeconds:F0}s — assuming no match and launching a new process. (Background scan still running, will be ignored.)");
+                Console.WriteLine($"[proc:{LogPrefix}] WMI scan exceeded {scanTimeout.TotalSeconds:F0}s — assuming no match and launching a new process. (Background scan still running, will be ignored.)");
                 existing = null;
                 _ = scanTask.ContinueWith(t =>
                 {
                     if (t.Exception is not null)
-                        Console.WriteLine($"[proc:{_label}] Late WMI scan failed: {t.Exception.GetBaseException().Message}");
+                        Console.WriteLine($"[proc:{LogPrefix}] Late WMI scan failed: {t.Exception.GetBaseException().Message}");
                 }, TaskScheduler.Default);
             }
             if (existing is not null)
@@ -74,14 +109,14 @@ class ProcessManager : IDisposable
                 _wasPreExisting = true;
                 existing.EnableRaisingEvents = true;
                 existing.Exited += (_, _) =>
-                    Console.WriteLine($"[proc:{_label}] Pre-existing process (PID {existing.Id}) exited.");
-                Console.WriteLine($"[proc:{_label}] Found pre-existing '{_cfg.FileName}' (PID {existing.Id}), attaching — will NOT terminate on router exit.");
+                    Console.WriteLine($"[proc:{LogPrefix}] Pre-existing process (PID {existing.Id}) exited.");
+                Console.WriteLine($"[proc:{LogPrefix}] Found pre-existing '{_cfg.FileName}' (PID {existing.Id}), attaching — will NOT terminate on router exit.");
                 return;
             }
 
             // Not found: launch it ourselves.
             _wasPreExisting = false;
-            Console.WriteLine($"[proc:{_label}] No matching pre-existing process found. Launching: {_cfg.FileName} {_cfg.Arguments}");
+            Console.WriteLine($"[proc:{LogPrefix}] No matching pre-existing process found. Launching: {_cfg.FileName} {_cfg.Arguments}");
 
             var psi = new ProcessStartInfo
             {
@@ -98,22 +133,32 @@ class ProcessManager : IDisposable
             // Stream stdout / stderr to the router console
             _process.OutputDataReceived += (_, e) =>
             {
-                if (e.Data is not null) Console.WriteLine($"[proc:{_label}] {e.Data}");
+                if (e.Data is not null)
+                {
+                    var line = $"[proc:{LogPrefix}] {e.Data}";
+                    Console.WriteLine(line);
+                    AppendLog(line);
+                }
             };
             _process.ErrorDataReceived += (_, e) =>
             {
-                if (e.Data is not null) Console.WriteLine($"[proc:{_label}] ERR {e.Data}");
+                if (e.Data is not null)
+                {
+                    var line = $"[proc:{LogPrefix}] ERR {e.Data}";
+                    Console.WriteLine(line);
+                    AppendLog(line);
+                }
             };
             _process.Exited += (_, _) =>
-                Console.WriteLine($"[proc:{_label}] Process exited with code {SafeExitCode()}");
+                Console.WriteLine($"[proc:{LogPrefix}] Process exited with code {SafeExitCode()}");
 
             _process.Start();
             _process.BeginOutputReadLine();
             _process.BeginErrorReadLine();
 
-            Console.WriteLine($"[proc:{_label}] Started (PID {_process.Id}), waiting {_cfg.StartupDelaySeconds}s for readiness…");
+            Console.WriteLine($"[proc:{LogPrefix}] Started (PID {_process.Id}), waiting {_cfg.StartupDelaySeconds}s for readiness…");
             await Task.Delay(TimeSpan.FromSeconds(_cfg.StartupDelaySeconds), ct);
-            Console.WriteLine($"[proc:{_label}] Ready.");
+            Console.WriteLine($"[proc:{LogPrefix}] Ready.");
         }
         finally
         {
@@ -143,20 +188,20 @@ class ProcessManager : IDisposable
 
             if (_wasPreExisting)
             {
-                Console.WriteLine($"[proc:{_label}] Skipping kill — process (PID {_process!.Id}) was pre-existing and not owned by the router.");
+                Console.WriteLine($"[proc:{LogPrefix}] Skipping kill — process (PID {_process!.Id}) was pre-existing and not owned by the router.");
                 return;
             }
 
-            Console.WriteLine($"[proc:{_label}] Killing process (PID {_process!.Id})…");
+            Console.WriteLine($"[proc:{LogPrefix}] Killing process (PID {_process!.Id})…");
             try
             {
                 _process!.Kill(entireProcessTree: true);
                 await _process.WaitForExitAsync();
-                Console.WriteLine($"[proc:{_label}] Killed.");
+                Console.WriteLine($"[proc:{LogPrefix}] Killed.");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[proc:{_label}] Kill failed: {ex.Message}");
+                Console.WriteLine($"[proc:{LogPrefix}] Kill failed: {ex.Message}");
             }
         }
         finally
@@ -205,18 +250,18 @@ class ProcessManager : IDisposable
                 try
                 {
                     var proc = System.Diagnostics.Process.GetProcessById(pid);
-                    Console.WriteLine($"[proc:{_label}] Found pre-existing process matching '{_cfg.FileName} {_cfg.Arguments}' (PID {pid}) after scanning {scanned} candidate(s) in {sw.ElapsedMilliseconds}ms.");
+                    Console.WriteLine($"[proc:{LogPrefix}] Found pre-existing process matching '{_cfg.FileName} {_cfg.Arguments}' (PID {pid}) after scanning {scanned} candidate(s) in {sw.ElapsedMilliseconds}ms.");
                     return proc;
                 }
                 catch { /* process exited between query and GetProcessById */ }
             }
 
             sw.Stop();
-            Console.WriteLine($"[proc:{_label}] WMI scan complete: {scanned} '{exeName}' process(es) inspected, no match (took {sw.ElapsedMilliseconds}ms).");
+            Console.WriteLine($"[proc:{LogPrefix}] WMI scan complete: {scanned} '{exeName}' process(es) inspected, no match (took {sw.ElapsedMilliseconds}ms).");
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[proc:{_label}] Warning: WMI process scan failed: {ex.Message}");
+            Console.WriteLine($"[proc:{LogPrefix}] Warning: WMI process scan failed: {ex.Message}");
         }
 
         return null;

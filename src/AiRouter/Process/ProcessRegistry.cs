@@ -14,7 +14,7 @@ class ProcessRegistry : IDisposable
         var key = MakeKey(cfg);
         if (!_managers.TryGetValue(key, out var mgr))
         {
-            mgr = new ProcessManager(cfg, label);
+            mgr = new ProcessManager(cfg);
             _managers[key] = mgr;
         }
         return mgr;
@@ -85,6 +85,21 @@ class ProcessRegistry : IDisposable
     {
         foreach (var mgr in _managers.Values)
             mgr.Dispose();
+    }
+
+    internal ProcessManager? GetManager(ProcessConfig cfg)
+    {
+        var key = MakeKey(cfg);
+        _managers.TryGetValue(key, out var mgr);
+        return mgr;
+    }
+
+    internal IReadOnlyList<string> GetLogs(ProcessConfig cfg)
+    {
+        var key = MakeKey(cfg);
+        if (_managers.TryGetValue(key, out var mgr))
+            return mgr.GetLogs();
+        return new List<string>();
     }
 
     public static string MakeKey(ProcessConfig cfg) =>

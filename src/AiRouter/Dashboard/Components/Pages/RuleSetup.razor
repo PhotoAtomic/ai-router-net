@@ -26,12 +26,13 @@
 }
 else
 {
-    <div style="overflow-x:auto;" @ref="_tableContainer">
+    <div @ref="_tableContainer">
         <table style="@TableStyle">
             <thead>
                 <tr style="background:#1a202c; position:sticky; top:0; z-index:1;">
                     <th style="@Th; width:60px;">Actions</th>
                     <th style="@Th">Pattern</th>
+                    <th style="@Th">Format</th>
                     <th style="@Th">BaseUrl</th>
                     <th style="@Th">Force Model</th>
                     <th style="@Th; width:140px;">Enable LlamaCpp Recover</th>
@@ -78,6 +79,21 @@ else
                             else
                             {
                                 <span style="font-family:monospace; color:#e2e8f0;">@rule.Pattern</span>
+                            }
+                        </td>
+                        <td style="@Td">
+                            @if (isEditing)
+                            {
+                                <select value="@editRule!.EndpointType"
+                                        @onchange="@(e => HandleEndpointTypeInput(idx, e.Value?.ToString() ?? "Anthropic"))"
+                                        style="@InputStyle; width:100%;">
+                                    <option value="Anthropic">Anthropic</option>
+                                    <option value="OpenAI">OpenAI</option>
+                                </select>
+                            }
+                            else
+                            {
+                                <span style="color:#a0aec0;">@rule.EndpointType</span>
                             }
                         </td>
                         <td style="@Td">
@@ -143,10 +159,6 @@ else
                                 <input value="@editRule!.Process?.FileName"
                                        @oninput="@(e => HandleProcessFileNameInput(idx, e.Value?.ToString() ?? ""))"
                                        style="@InputStyle" placeholder="executable" />
-                                @if (editRule!.Process is not null && !editRule!.Process.IsValidFileName())
-                                {
-                                    <div style="color:#fc8181; font-size:.7rem; margin-top:.25rem;">File not found</div>
-                                }
                             }
                             else
                             {
@@ -213,6 +225,15 @@ else
                        style="@InputStyle; width:100%;" placeholder="e.g., http://localhost:8080/v1" />
             </div>
             <div>
+                <label style="display:block; font-size:.75rem; color:#718096; margin-bottom:.35rem;">Endpoint Format</label>
+                <select value="@_newRule.EndpointType"
+                        @onchange="@(e => HandleNewRuleEndpointTypeInput(e.Value?.ToString() ?? "Anthropic"))"
+                        style="@InputStyle; width:100%;">
+                    <option value="Anthropic">Anthropic</option>
+                    <option value="OpenAI">OpenAI</option>
+                </select>
+            </div>
+            <div>
                 <label style="display:block; font-size:.75rem; color:#718096; margin-bottom:.35rem;">Force Model (optional)</label>
                 @if (_newRule.IsLLamaCpp)
                 {
@@ -259,10 +280,6 @@ else
                 <input value="@_newRule.Process?.FileName"
                        @oninput="@(e => HandleNewRuleProcessFileNameInput(e.Value?.ToString() ?? ""))"
                        style="@InputStyle; width:100%;" placeholder="e.g., pwsh" />
-                @if (_newRule.Process is not null && !_newRule.Process.IsValidFileName())
-                {
-                    <div style="color:#fc8181; font-size:.7rem; margin-top:.25rem;">@(_newRule.Process.FileName.Length > 0 ? "File not found" : "")</div>
-                }
             </div>
             <div>
                 <label style="display:block; font-size:.75rem; color:#718096; margin-bottom:.35rem;">Process Arguments (optional)</label>
@@ -335,6 +352,7 @@ else
             Pattern = rule.Pattern,
             BaseUrl = rule.BaseUrl,
             ForceModel = rule.ForceModel,
+            EndpointType = rule.EndpointType,
             EnableLLamaCppModelRecover = rule.EnableLLamaCppModelRecover,
             IsLLamaCpp = rule.IsLLamaCpp,
             Process = rule.Process is not null ? new ProcessConfig
@@ -378,6 +396,7 @@ else
             Pattern = "^",
             BaseUrl = "http://localhost:8080/v1",
             ForceModel = null,
+            EndpointType = "Anthropic",
             Process = new ProcessConfig
             {
                 FileName = "pwsh",
@@ -413,6 +432,15 @@ else
         if (_editingRules.TryGetValue(index, out var rule))
         {
             rule.Pattern = value;
+            StateHasChanged();
+        }
+    }
+
+    void HandleEndpointTypeInput(int index, string value)
+    {
+        if (_editingRules.TryGetValue(index, out var rule))
+        {
+            rule.EndpointType = value;
             StateHasChanged();
         }
     }
@@ -495,6 +523,12 @@ else
     void HandleNewRuleBaseUrlInput(string value)
     {
         _newRule.BaseUrl = value;
+        StateHasChanged();
+    }
+
+    void HandleNewRuleEndpointTypeInput(string value)
+    {
+        _newRule.EndpointType = value;
         StateHasChanged();
     }
 
