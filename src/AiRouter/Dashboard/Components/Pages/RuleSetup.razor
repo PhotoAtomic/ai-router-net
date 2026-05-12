@@ -59,6 +59,7 @@ else
                                 else
                                 {
                                     <button @onclick="() => StartEdit(idx)" style="@ActionBtnStyle" title="Edit">✎</button>
+                                    <button @onclick="() => DuplicateRule(idx)" style="@ActionBtnStyle" title="Duplicate">⎘</button>
                                     <button @onclick="() => DeleteRule(idx)" style="@ActionBtnStyle; color:#fc8181; border-color:#fc8181;" title="Delete">✕</button>
                                     <button @onclick="() => Rules.MoveUp(idx)" style="@ActionBtnStyle" title="Move Up" disabled="@(idx == 0)">↑</button>
                                     <button @onclick="() => Rules.MoveDown(idx)" style="@ActionBtnStyle" title="Move Down" disabled="@(idx == _rules.Count - 1)">↓</button>
@@ -97,7 +98,16 @@ else
                             }
                         </td>
                         <td style="@Td">
-                            <span style="font-family:monospace; color:#68d391;">@rule.BaseUrl</span>
+                            @if (isEditing)
+                            {
+                                <input value="@editRule!.BaseUrl"
+                                       @oninput="@(e => HandleBaseUrlInput(idx, e.Value?.ToString() ?? ""))"
+                                       style="@InputStyle; width:100%;" placeholder="e.g., http://localhost:8080/v1" />
+                            }
+                            else
+                            {
+                                <span style="font-family:monospace; color:#68d391;">@rule.BaseUrl</span>
+                            }
                         </td>
                         <td style="@Td">
                             @if (isEditing)
@@ -412,6 +422,11 @@ else
         Rules.DeleteRule(index);
     }
 
+    void DuplicateRule(int index)
+    {
+        Rules.DuplicateRule(index);
+    }
+
     // ── Add new rule ───────────────────────────────────────────────
 
     void AddNewRule()
@@ -468,6 +483,15 @@ else
         if (_editingRules.TryGetValue(index, out var rule))
         {
             rule.EndpointType = value;
+            StateHasChanged();
+        }
+    }
+
+    void HandleBaseUrlInput(int index, string value)
+    {
+        if (_editingRules.TryGetValue(index, out var rule))
+        {
+            rule.BaseUrl = value;
             StateHasChanged();
         }
     }

@@ -56,6 +56,66 @@ class ProcessManager : IDisposable
         _cfg = cfg;
     }
 
+    // Scans the OS for an already-running process matching this config.
+    // If found, attaches to it and returns true.
+    [SupportedOSPlatform("windows")]
+    private async Task<bool> TryAttachExistingAsync(CancellationToken ct)
+    {
+        var scanTask = Task.Run(FindExistingProcess, ct);
+        var scanTimeout = TimeSpan.FromSeconds(5);
+        var completed = await Task.WhenAny(scanTask, Task.Delay(scanTimeout, ct));
+        System.Diagnostics.Process? existing;
+        if (completed == scanTask)
+        {
+            existing = await scanTask;
+        }
+        else
+        {
+            Console.WriteLine($"[proc:{LogPrefix}] WMI scan exceeded {scanTimeout.TotalSeconds:F0}s — assuming no match.");
+            existing = null;
+            _ = scanTask.ContinueWith(t =>
+            {
+                if (t.Exception is not null)
+                    Console.WriteLine($"[proc:{LogPrefix}] Late WMI scan failed: {t.Exception.GetBaseException().Message}");
+            }, TaskScheduler.Default);
+        }
+
+        if (existing is null) return false;
+
+        _process = existing;
+        _wasPreExisting = true;
+        existing.EnableRaisingEvents = true;
+        existing.Exited += (_, _) =>
+            Console.WriteLine($"[proc:{LogPrefix}] Pre-existing process (PID {existing.Id}) exited.");
+        Console.WriteLine($"[proc:{LogPrefix}] Found pre-existing '{_cfg.FileName}' (PID {existing.Id}), attaching — will NOT terminate on router exit.");
+        return true;
+    }
+
+    // Refreshes the alive status by scanning for a pre-existing process.
+    // Does NOT launch a new process if none is found.
+    [SupportedOSPlatform("windows")]
+    public async Task RefreshAliveAsync(CancellationToken ct = default)
+    {
+        await _lock.WaitAsync(ct);
+        try
+        {
+            if (IsAlive) return;
+
+            if (_process is not null)
+            {
+                _process.Dispose();
+                _process = null;
+                _wasPreExisting = false;
+            }
+
+            await TryAttachExistingAsync(ct);
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
     // Ensures the process is running, starting/restarting if necessary.
     // Must be called before forwarding each request to this rule's backend.
     [SupportedOSPlatform("windows")]
@@ -81,38 +141,8 @@ class ProcessManager : IDisposable
 
             // Check if the process is already running on the system.
             Console.WriteLine($"[proc:{LogPrefix}] Scanning OS for an existing process matching '{_cfg.FileName} {_cfg.Arguments}'…");
-            // The WMI query can occasionally hang (slow/locked WMI service);
-            // run it on a background task with a hard timeout so we never
-            // block EnsureRunningAsync indefinitely. On timeout we proceed as
-            // if no match was found and launch a fresh process.
-            System.Diagnostics.Process? existing;
-            var scanTask = Task.Run(FindExistingProcess);
-            var scanTimeout = TimeSpan.FromSeconds(5);
-            var completed = await Task.WhenAny(scanTask, Task.Delay(scanTimeout, ct));
-            if (completed == scanTask)
-            {
-                existing = await scanTask;
-            }
-            else
-            {
-                Console.WriteLine($"[proc:{LogPrefix}] WMI scan exceeded {scanTimeout.TotalSeconds:F0}s — assuming no match and launching a new process. (Background scan still running, will be ignored.)");
-                existing = null;
-                _ = scanTask.ContinueWith(t =>
-                {
-                    if (t.Exception is not null)
-                        Console.WriteLine($"[proc:{LogPrefix}] Late WMI scan failed: {t.Exception.GetBaseException().Message}");
-                }, TaskScheduler.Default);
-            }
-            if (existing is not null)
-            {
-                _process = existing;
-                _wasPreExisting = true;
-                existing.EnableRaisingEvents = true;
-                existing.Exited += (_, _) =>
-                    Console.WriteLine($"[proc:{LogPrefix}] Pre-existing process (PID {existing.Id}) exited.");
-                Console.WriteLine($"[proc:{LogPrefix}] Found pre-existing '{_cfg.FileName}' (PID {existing.Id}), attaching — will NOT terminate on router exit.");
+            if (await TryAttachExistingAsync(ct))
                 return;
-            }
 
             // Not found: launch it ourselves.
             _wasPreExisting = false;

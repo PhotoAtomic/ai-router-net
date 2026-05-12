@@ -81,6 +81,18 @@ class ProcessRegistry : IDisposable
         }
     }
 
+    public async Task RefreshAllAsync()
+    {
+        foreach (var mgr in _managers.Values)
+        {
+            try { await mgr.RefreshAliveAsync(); }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[registry] RefreshAlive failed for a manager: {ex.Message}");
+            }
+        }
+    }
+
     public void Dispose()
     {
         foreach (var mgr in _managers.Values)

@@ -9,7 +9,7 @@ namespace AiRouter.Routing;
 // Also allows callers to unload a model via POST /models/unload.
 internal sealed class LlamaCppMonitorService : IDisposable
 {
-    private readonly HttpClient _http = new();
+    private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(5) };
     private readonly Lock _lock = new();
     private List<string> _llamaBaseUrls = [];
 
@@ -33,6 +33,8 @@ internal sealed class LlamaCppMonitorService : IDisposable
             .Select(r => r.BaseUrl.TrimEnd('/'))
             .Distinct()
             .ToList();
+
+        Console.WriteLine($"[llama-monitor] Monitoring {urls.Count} LlamaCpp server(s): {string.Join(", ", urls)}");
 
         lock (_lock)
         {
@@ -63,13 +65,16 @@ internal sealed class LlamaCppMonitorService : IDisposable
     }
 
     // Returns a snapshot of loaded models per base URL for all monitored servers.
+    // Every configured IsLLamaCpp URL is present, even if no models are currently loaded.
     public IReadOnlyDictionary<string, IReadOnlyList<string>> GetSnapshot()
     {
         lock (_lock)
         {
-            return _loadedModels.ToDictionary(
-                kvp => kvp.Key,
-                kvp => (IReadOnlyList<string>)kvp.Value.ToList());
+            return _llamaBaseUrls.ToDictionary(
+                url => url,
+                url => _loadedModels.TryGetValue(url, out var loaded)
+                    ? (IReadOnlyList<string>)loaded.ToList()
+                    : []);
         }
     }
 
@@ -92,6 +97,15 @@ internal sealed class LlamaCppMonitorService : IDisposable
             if (_processConfigs.TryGetValue(baseUrl.TrimEnd('/'), out var config))
                 return config;
             return null;
+        }
+    }
+
+    // True when the last successful poll received a 200 from /models for this baseUrl.
+    public bool IsReachable(string baseUrl)
+    {
+        lock (_lock)
+        {
+            return _allModels.ContainsKey(baseUrl.TrimEnd('/'));
         }
     }
 
@@ -168,13 +182,25 @@ internal sealed class LlamaCppMonitorService : IDisposable
         List<string> urlsSnapshot;
         lock (_lock) { urlsSnapshot = [.. _llamaBaseUrls]; }
 
+        if (urlsSnapshot.Count == 0)
+            return;
+
         bool anyChanged = false;
         foreach (var baseUrl in urlsSnapshot)
         {
             try
             {
                 using var resp = await _http.GetAsync($"{baseUrl}/models", CancellationToken.None);
-                if (!resp.IsSuccessStatusCode) continue;
+                if (!resp.IsSuccessStatusCode)
+                {
+                    Console.WriteLine($"[llama-monitor] {baseUrl} returned {(int)resp.StatusCode}, clearing models.");
+                    lock (_lock)
+                    {
+                        if (_loadedModels.Remove(baseUrl)) anyChanged = true;
+                        if (_allModels.Remove(baseUrl)) anyChanged = true;
+                    }
+                    continue;
+                }
 
                 await using var stream = await resp.Content.ReadAsStreamAsync();
                 using var doc = await JsonDocument.ParseAsync(stream);
@@ -223,8 +249,9 @@ internal sealed class LlamaCppMonitorService : IDisposable
                         anyChanged = true;
                 }
             }
-            catch
+            catch (Exception ex)
             {
+                Console.WriteLine($"[llama-monitor] {baseUrl} poll failed: {ex.Message}");
                 lock (_lock)
                 {
                     if (_loadedModels.Remove(baseUrl))

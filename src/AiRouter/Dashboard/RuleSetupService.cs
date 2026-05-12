@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Configuration;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using AiRouter.Process;
@@ -58,6 +59,12 @@ public sealed class RuleSetupService : IDisposable
     private readonly string _configPath;
     private bool _disposed = false;
 
+    private static readonly JsonSerializerOptions _fileJsonOptions = new()
+    {
+        WriteIndented = true,
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+    };
+
     public RuleSetupService(IConfigurationRoot config)
     {
         _config = config;
@@ -81,7 +88,7 @@ public sealed class RuleSetupService : IDisposable
         var currentContent = File.ReadAllText(_configPath);
 
         // Serialize rules to JSON
-        var rulesJson = JsonSerializer.Serialize(rules, new JsonSerializerOptions { WriteIndented = true });
+        var rulesJson = JsonSerializer.Serialize(rules, _fileJsonOptions);
 
         // Build new JSON object with updated RoutingRules
         var newJson = BuildUpdatedConfig(currentContent, rulesJson);
@@ -155,12 +162,40 @@ public sealed class RuleSetupService : IDisposable
         }
     }
 
+    /// <summary>Duplicate a rule and insert the copy immediately below it</summary>
+    public void DuplicateRule(int index)
+    {
+        var rules = GetRules();
+        if (index < 0 || index >= rules.Count)
+            return;
+
+        var original = rules[index];
+        var copy = new RoutingRuleConfig
+        {
+            Pattern = original.Pattern,
+            BaseUrl = original.BaseUrl,
+            ForceModel = original.ForceModel,
+            EndpointType = original.EndpointType,
+            EnableLLamaCppModelRecover = original.EnableLLamaCppModelRecover,
+            IsLLamaCpp = original.IsLLamaCpp,
+            Process = original.Process is not null ? new ProcessConfig
+            {
+                FileName = original.Process.FileName,
+                Arguments = original.Process.Arguments,
+                StartupDelaySeconds = original.Process.StartupDelaySeconds
+            } : null
+        };
+
+        rules.Insert(index + 1, copy);
+        SaveRules(rules);
+    }
+
     // ── Private helpers ──────────────────────────────────────────────────────
 
     private string BuildUpdatedConfig(string originalJson, string rulesJson)
     {
         // Use JsonDocument to parse and build new JSON
-        var options = new JsonSerializerOptions { WriteIndented = true };
+        var options = _fileJsonOptions;
 
         // Sanitize input to remove comments before parsing
         var sanitizedJson = RemoveJsonComments(originalJson);

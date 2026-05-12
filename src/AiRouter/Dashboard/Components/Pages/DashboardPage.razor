@@ -17,12 +17,37 @@
         <h3 style="margin:0 0 .75rem; font-size:1rem; color:#90cdf4; letter-spacing:.03em;">🦙 LlamaCpp Servers</h3>
         @foreach (var (baseUrl, models) in llamaSnapshot)
         {
-            <div style="display:flex; align-items:flex-start; gap:1rem; margin-bottom:.5rem; flex-wrap:wrap;">
-                <div style="flex:1; min-width:0;">
-                    <div style="display:flex; align-items:center; gap:.5rem; flex-wrap:wrap;">
-                        <span style="font-family:monospace; font-size:.8rem; color:#a0aec0; padding:.25rem 0; min-width:0; word-break:break-all;">@baseUrl</span>
-                        @if (IsOwnedAndAlive(baseUrl.TrimEnd('/')))
+            var reachable = LlamaMonitor.IsReachable(baseUrl);
+            var config = LlamaMonitor.GetProcessConfig(baseUrl);
+            var mgr = config is not null ? Registry.GetManager(config) : null;
+            var processRunning = mgr?.IsAlive == true;
+            if (!reachable && !processRunning) continue;
+
+            <div @key="baseUrl" style="display:flex; align-items:flex-start; gap:1rem; padding:.6rem 0; border-top:1px solid #2d3748; opacity:@(reachable ? "1" : "0.65");">
+                <!-- Left: endpoint URL + actions -->
+                <div style="flex:0 0 auto; min-width:200px; max-width:40%;">
+                    <div style="display:flex; align-items:center; gap:.4rem; padding:.25rem 0;">
+                        <span style="font-family:monospace; font-size:.8rem; color:#a0aec0; word-break:break-all;">@baseUrl</span>
+                        @if (reachable)
                         {
+                            <span title="Online" style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#48bb78; box-shadow:0 0 4px #48bb78;"></span>
+                        }
+                        else
+                        {
+                            <span title="Offline" style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#e53e3e; box-shadow:0 0 4px #e53e3e;"></span>
+                        }
+                        @if (processRunning)
+                        {
+                            <span title="Process running" style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#4299e1; box-shadow:0 0 4px #4299e1;"></span>
+                        }
+                        else if (config is not null)
+                        {
+                            <span title="Process not running" style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#718096; box-shadow:0 0 4px #718096;"></span>
+                        }
+                    </div>
+                    @if (IsOwnedAndAlive(baseUrl.TrimEnd('/')))
+                    {
+                        <div style="display:flex; gap:.4rem; margin-top:.3rem;">
                             <button @onclick="() => TerminateProcessAsync(baseUrl.TrimEnd('/'))"
                                     title="Terminate process for this server"
                                     style="@TerminateBtnStyle">
@@ -33,11 +58,16 @@
                                     style="@LogBtnStyle">
                                 Logs
                             </button>
-                        }
-                    </div>
+                        </div>
+                    }
                 </div>
-                <div style="display:flex; flex-wrap:wrap; gap:.4rem;">
-                    @if (models.Count == 0)
+                <!-- Right: models -->
+                <div style="flex:1 1 auto; display:flex; flex-wrap:wrap; gap:.4rem; align-items:center;">
+                    @if (!reachable)
+                    {
+                        <span style="color:#f6ad55; font-size:.8rem; padding:.25rem 0; font-style:italic;">starting…</span>
+                    }
+                    else if (models.Count == 0)
                     {
                         <span style="color:#4a5568; font-size:.8rem; padding:.25rem 0;">no models loaded</span>
                     }
@@ -275,6 +305,7 @@ else
     string _filterEndpoint = string.Empty;
 
     Timer? _liveTimer;
+    Timer? _procRefreshTimer;
 
     // Log popup state
     bool _showLogPopup;
@@ -292,6 +323,7 @@ else
         Watcher.Changed += OnChanged;
         LlamaMonitor.Changed += OnChanged;
         _liveTimer = new Timer(_ => InvokeAsync(StateHasChanged), null, 500, 500);
+        _procRefreshTimer = new Timer(_ => _ = Registry.RefreshAllAsync(), null, TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(5));
     }
 
     void OnChanged()
@@ -302,6 +334,7 @@ else
         Watcher.Changed -= OnChanged;
         LlamaMonitor.Changed -= OnChanged;
         _liveTimer?.Dispose();
+        _procRefreshTimer?.Dispose();
 
         if (_activeLogManager is not null)
         {
