@@ -35,12 +35,15 @@ class Router : IDisposable
     // grabbed at the start of HandleMessagesAsync, so reloads never break them.
     private volatile RouterSnapshot _snapshot;
     private readonly RequestLogger? _logger;
+    private CancellationToken _shutdownToken;
 
     public Router(RouterSnapshot snapshot, RequestLogger? logger = null)
     {
         _snapshot = snapshot;
         _logger = logger;
     }
+
+    public void SetShutdownToken(CancellationToken token) => _shutdownToken = token;
 
     // Hot-reload: called whenever appsettings.json changes.
     public void Reload(RouterSnapshot newSnapshot)
@@ -77,6 +80,9 @@ class Router : IDisposable
     // Main entry point for /v1/messages
     public async Task HandleGenericAsync(HttpContext ctx)
     {
+        using var requestCts = CancellationTokenSource.CreateLinkedTokenSource(ctx.RequestAborted, _shutdownToken);
+        var ct = requestCts.Token;
+
         // Capture snapshot once; reload during this request has no effect on it.
         var snap = _snapshot;
         var req = ctx.Request;
@@ -93,7 +99,7 @@ class Router : IDisposable
         // --- Read body -------------------------------------------------------
         string body;
         using (var sr = new StreamReader(req.Body, Encoding.UTF8, leaveOpen: true))
-            body = await sr.ReadToEndAsync();
+            body = await sr.ReadToEndAsync(ct);
 
         var requestSizeBytes = (long)Encoding.UTF8.GetByteCount(body);
         var requestHeaders   = CollectRequestHeaders(req.Headers);
@@ -181,7 +187,7 @@ class Router : IDisposable
             Console.WriteLine($"[proc] Rule '{rule.Pattern}' has a managed process configured ({rule.Process?.FileName} {rule.Process?.Arguments}). Ensuring it is running…");
             try
             {
-                await rule.ProcessManager.EnsureRunningAsync(ctx.RequestAborted);
+                await rule.ProcessManager.EnsureRunningAsync(ct);
             }
             catch (Exception ex)
             {
@@ -193,7 +199,7 @@ class Router : IDisposable
 
             var readyTimeout = TimeSpan.FromSeconds(60);
             var ready = await WaitForUpstreamReadyAsync(
-                readinessHttp, rule.BaseUrl, readyTimeout, ctx.RequestAborted);
+                readinessHttp, rule.BaseUrl, readyTimeout, ct);
             if (!ready)
             {
                 Console.WriteLine($"[error] Upstream {rule.BaseUrl} did not become ready within {readyTimeout.TotalSeconds:F0}s.");
@@ -239,7 +245,7 @@ class Router : IDisposable
             upstreamRes = await httpClient.SendAsync(
                 upstreamReq,
                 HttpCompletionOption.ResponseHeadersRead,
-                ctx.RequestAborted);
+                ct);
         }
         catch (Exception ex)
         {
@@ -252,16 +258,16 @@ class Router : IDisposable
                 Console.WriteLine($"[warn] Upstream call failed ({ex.Message}); ensuring process is running and retrying once…");
                 try
                 {
-                    await rule.ProcessManager.EnsureRunningAsync(ctx.RequestAborted);
+                    await rule.ProcessManager.EnsureRunningAsync(ct);
                     var retryReady = await WaitForUpstreamReadyAsync(
-                        readinessHttp, rule.BaseUrl, TimeSpan.FromSeconds(60), ctx.RequestAborted);
+                        readinessHttp, rule.BaseUrl, TimeSpan.FromSeconds(60), ct);
                     if (retryReady)
                     {
                         upstreamReq = BuildUpstreamRequest();
                         upstreamRes = await httpClient.SendAsync(
                             upstreamReq,
                             HttpCompletionOption.ResponseHeadersRead,
-                            ctx.RequestAborted);
+                            ct);
                         goto upstreamSendDone;
                     }
                 }
@@ -290,7 +296,7 @@ class Router : IDisposable
             Console.WriteLine($"[recover] {modelToRecover}: upstream 500 → attempting llama.cpp model recovery…");
 
             // Drain & dispose the failed response body so we can reissue.
-            try { _ = await upstreamRes.Content.ReadAsByteArrayAsync(ctx.RequestAborted); } catch { }
+            try { _ = await upstreamRes.Content.ReadAsByteArrayAsync(ct); } catch { }
             var initialFailedResponse = upstreamRes;
             upstreamReq.Dispose();
 
@@ -300,7 +306,7 @@ class Router : IDisposable
 
             var recovery = new LlamaCppRecoveryService(httpClient);
             var outcome = await recovery.TryRecoverAsync(
-                rule.BaseUrl, modelToRecover, postLoadDelay, recoveryAttempts, ctx.RequestAborted);
+                rule.BaseUrl, modelToRecover, postLoadDelay, recoveryAttempts, ct);
 
             if (outcome == RecoveryOutcome.Recovered)
             {
@@ -315,7 +321,7 @@ class Router : IDisposable
                     try
                     {
                         replayRes = await httpClient.SendAsync(
-                            replayReq, HttpCompletionOption.ResponseHeadersRead, ctx.RequestAborted);
+                            replayReq, HttpCompletionOption.ResponseHeadersRead, ct);
                     }
                     catch (Exception ex)
                     {
@@ -335,14 +341,14 @@ class Router : IDisposable
                             break;
                         }
                         recoveryAttempts.Add($"replay {i}/{replayAttempts} → 500.");
-                        try { _ = await replayRes.Content.ReadAsByteArrayAsync(ctx.RequestAborted); } catch { }
+                        try { _ = await replayRes.Content.ReadAsByteArrayAsync(ct); } catch { }
                         replayRes.Dispose();
                         replayReq.Dispose();
                     }
 
                     if (i < replayAttempts)
                     {
-                        try { await Task.Delay(delay, ctx.RequestAborted); }
+                        try { await Task.Delay(delay, ct); }
                         catch (OperationCanceledException) { break; }
                         delay = TimeSpan.FromMilliseconds(Math.Min(delay.TotalMilliseconds * 2, 30_000));
                     }
@@ -403,21 +409,21 @@ class Router : IDisposable
             {
                 if (needsConversion)
                 {
-                    var parser = SseParser.ParseAsync(upstreamStream, logBuffer, ctx.RequestAborted);
+                    var parser = SseParser.ParseAsync(upstreamStream, logBuffer, ct);
                     var converted = targetFormat == ApiFormat.Anthropic
                         ? AnthropicToOpenAiStreamConverter.ConvertAsync(parser, conversionContext)
-                        : OpenAiToAnthropicStreamConverter.ConvertAsync(parser, ctx.RequestAborted, conversionContext);
-                    await SseWriter.WriteAsync(res.Body, converted, ctx.RequestAborted);
+                        : OpenAiToAnthropicStreamConverter.ConvertAsync(parser, ct, conversionContext);
+                    await SseWriter.WriteAsync(res.Body, converted, ct);
                 }
                 else
                 {
                     var buffer = new byte[4096];
                     int bytesRead;
-                    while ((bytesRead = await upstreamStream.ReadAsync(buffer, ctx.RequestAborted)) > 0)
+                    while ((bytesRead = await upstreamStream.ReadAsync(buffer, ct)) > 0)
                     {
-                        await res.Body.WriteAsync(buffer.AsMemory(0, bytesRead), ctx.RequestAborted);
-                        await res.Body.FlushAsync(ctx.RequestAborted);
-                        await logBuffer.WriteAsync(buffer.AsMemory(0, bytesRead), ctx.RequestAborted);
+                        await res.Body.WriteAsync(buffer.AsMemory(0, bytesRead), ct);
+                        await res.Body.FlushAsync(ct);
+                        await logBuffer.WriteAsync(buffer.AsMemory(0, bytesRead), ct);
                     }
                 }
             }
@@ -435,7 +441,7 @@ class Router : IDisposable
         }
         else
         {
-            var rawBytes = await upstreamRes.Content.ReadAsByteArrayAsync(ctx.RequestAborted);
+            var rawBytes = await upstreamRes.Content.ReadAsByteArrayAsync(ct);
             responseSizeBytes = rawBytes.LongLength;
             responseBody = Encoding.UTF8.GetString(rawBytes);
 
@@ -443,11 +449,11 @@ class Router : IDisposable
             {
                 var convertedBody = _responseConverter.Convert(responseBody, targetFormat, incomingFormat, conversionContext);
                 var convertedBytes = Encoding.UTF8.GetBytes(convertedBody);
-                await res.Body.WriteAsync(convertedBytes, ctx.RequestAborted);
+                await res.Body.WriteAsync(convertedBytes, ct);
             }
             else
             {
-                await res.Body.WriteAsync(rawBytes, ctx.RequestAborted);
+                await res.Body.WriteAsync(rawBytes, ct);
             }
         }
 

@@ -7,6 +7,7 @@ class RequestLogger : IDisposable
 {
     private readonly string _path;
     private readonly SemaphoreSlim _lock = new(1, 1);
+    private bool isDisposed = false;
 
     public RequestLogger(string path)
     {
@@ -16,18 +17,25 @@ class RequestLogger : IDisposable
 
     public async Task LogAsync(LogEntry entry)
     {
+        if (isDisposed) return;
         var line = System.Text.Json.JsonSerializer.Serialize(entry, AiRouterJsonContext.Default.LogEntry) + Environment.NewLine;
-
-        await _lock.WaitAsync();
         try
         {
-            await File.AppendAllTextAsync(_path, line);
+            await _lock.WaitAsync();
+            try
+            {
+                await File.AppendAllTextAsync(_path, line);
+            }
+            finally
+            {
+                _lock.Release();
+            }
         }
-        finally
-        {
-            _lock.Release();
-        }
+        catch { }
     }
 
-    public void Dispose() => _lock.Dispose();
+    public void Dispose() {
+        isDisposed = true;
+        _lock.Dispose();
+    }
 }

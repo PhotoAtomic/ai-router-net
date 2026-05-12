@@ -43,7 +43,9 @@ class Program
             logWatcher    = new LogWatcherService(logPath);
         }
 
+        using var shutdownCts = new CancellationTokenSource();
         var router = new Router(initialSnapshot, requestLogger);
+        router.SetShutdownToken(shutdownCts.Token);
 
         // LlamaCpp monitor — always created; no-op until rules with IsLLamaCpp arrive
         var llamaMonitor = new LlamaCppMonitorService();
@@ -87,6 +89,9 @@ class Program
         // --- Web host --------------------------------------------------------
         var builder = WebApplication.CreateBuilder(args);
         builder.WebHost.UseUrls(listenUrl);
+        // Aggressive shutdown: abort in-flight requests quickly on Ctrl+C
+        builder.Host.ConfigureHostOptions(o => o.ShutdownTimeout = TimeSpan.FromSeconds(2));
+        builder.WebHost.UseShutdownTimeout(TimeSpan.FromSeconds(2));
         // Disable request body size limit so large prompts are not rejected
         builder.WebHost.ConfigureKestrel(k => k.Limits.MaxRequestBodySize = null);
 
@@ -145,6 +150,19 @@ class Program
         Console.WriteLine();
         using var keyListenerCts = new CancellationTokenSource();
         var keyListenerTask = Task.Run(() => KeyListenerAsync(registry, keyListenerCts.Token));
+
+        // Force exit if shutdown takes longer than 3 s (e.g. a request is stuck)
+        Console.CancelKeyPress += (_, e) =>
+        {
+            e.Cancel = true; // let the host initiate graceful shutdown
+            shutdownCts.Cancel(); // immediately abort all in-flight requests
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(3000);
+                Console.WriteLine("[shutdown] Forced exit after Ctrl+C timeout.");
+                Environment.Exit(0);
+            });
+        };
 
         await app.RunAsync();
 
