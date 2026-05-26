@@ -41,7 +41,11 @@ class Program
         {
             string logPath;
             if (logIdx + 1 < args.Length && !args[logIdx + 1].StartsWith('-'))
+            {
                 logPath = args[logIdx + 1];
+                if (!Path.IsPathRooted(logPath))
+                    logPath = Path.Combine(AppContext.BaseDirectory, logPath);
+            }
             else
                 logPath = Path.Combine(
                     AppContext.BaseDirectory, "requests.jsonl");

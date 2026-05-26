@@ -119,7 +119,7 @@ dotnet run
 dotnet publish -c Release -r win-x64 --self-contained true
 ```
 
-L'eseguibile viene generato in `bin\Release\net10.0\win-x64\publish`. Il servizio usa `appsettings.json` dalla stessa cartella dell'eseguibile, quindi la configurazione resta valida anche quando Windows avvia il processo da `C:\Windows\System32`.
+L'eseguibile viene generato in `bin\Release\net10.0\win-x64\publish`. Il servizio usa `appsettings.json` dalla stessa cartella dell'eseguibile, quindi la configurazione resta valida anche quando Windows avvia il processo da `C:\Windows\System32`. Anche il salvataggio delle regole dalla dashboard aggiorna questo stesso file.
 
 ### Installazione come servizio Windows
 
@@ -153,7 +153,7 @@ Per abilitare logging e dashboard quando AiRouter parte come servizio, registra 
 .\AiRouter.exe --install-service --service-args "--log" --start
 ```
 
-Con `--log` senza percorso, `requests.jsonl` viene creato nella stessa cartella di `AiRouter.exe`. Se il servizio era gia' installato senza logging, rimuoverlo e reinstallarlo:
+Con `--log` senza percorso, `requests.jsonl` viene creato nella stessa cartella di `AiRouter.exe`. Anche un percorso relativo, ad esempio `--log requests.jsonl`, viene risolto rispetto alla cartella dell'eseguibile. Se il servizio era gia' installato senza logging, rimuoverlo e reinstallarlo:
 
 ```powershell
 .\AiRouter.exe --uninstall-service

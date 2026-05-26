@@ -68,7 +68,7 @@ public sealed class RuleSetupService : IDisposable
     public RuleSetupService(IConfigurationRoot config)
     {
         _config = config;
-        _configPath = Path.Combine(Directory.GetCurrentDirectory(), "appsettings.json");
+        _configPath = Path.Combine(AppContext.BaseDirectory, "appsettings.json");
     }
 
     /// <summary>Event fired when rules are saved (after config reload completes)</summary>
