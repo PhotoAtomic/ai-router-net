@@ -4,6 +4,7 @@ using AiRouter.Dashboard;
 using AiRouter.Logging;
 using AiRouter.Process;
 using AiRouter.Routing;
+using Microsoft.Extensions.Hosting.WindowsServices;
 
 // This application targets Windows only (published as win-x64 self-contained).
 [assembly: SupportedOSPlatform("windows")]
@@ -13,9 +14,14 @@ class Program
 {
     static async Task Main(string[] args)
     {
+        if (await TryHandleServiceCommandAsync(args))
+            return;
+
+        var isWindowsService = WindowsServiceHelpers.IsWindowsService();
+
         // --- Configuration ---------------------------------------------------
         var config = new ConfigurationBuilder()
-            .SetBasePath(Directory.GetCurrentDirectory())
+            .SetBasePath(AppContext.BaseDirectory)
             .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
             .AddEnvironmentVariables()
             .Build();
@@ -88,6 +94,7 @@ class Program
 
         // --- Web host --------------------------------------------------------
         var builder = WebApplication.CreateBuilder(args);
+        builder.Host.UseWindowsService(options => options.ServiceName = "AiRouter");
         builder.WebHost.UseUrls(listenUrl);
         // Aggressive shutdown: abort in-flight requests quickly on Ctrl+C
         builder.Host.ConfigureHostOptions(o => o.ShutdownTimeout = TimeSpan.FromSeconds(2));
@@ -146,10 +153,14 @@ class Program
         });
 
         // --- Background keyboard listener ------------------------------------
-        Console.WriteLine("[keys] Ctrl+K = kill managed processes  |  Ctrl+U = kill processes + shut down router");
-        Console.WriteLine();
         using var keyListenerCts = new CancellationTokenSource();
-        var keyListenerTask = Task.Run(() => KeyListenerAsync(registry, keyListenerCts.Token));
+        Task keyListenerTask = Task.CompletedTask;
+        if (!isWindowsService)
+        {
+            Console.WriteLine("[keys] Ctrl+K = kill managed processes  |  Ctrl+U = kill processes + shut down router");
+            Console.WriteLine();
+            keyListenerTask = Task.Run(() => KeyListenerAsync(registry, keyListenerCts.Token));
+        }
 
         // Force exit if shutdown takes longer than 3 s (e.g. a request is stuck)
         Console.CancelKeyPress += (_, e) =>
@@ -171,8 +182,122 @@ class Program
         try { await keyListenerTask; } catch { }
 
         // --- Ask user whether to terminate managed processes -----------------
-        await AskAndKillAsync(registry);
+        await AskAndKillAsync(registry, isWindowsService);
         registry.Dispose();
+    }
+
+    static async Task<bool> TryHandleServiceCommandAsync(string[] args)
+    {
+        if (args.Length == 0)
+            return false;
+
+        var command = args[0].ToLowerInvariant();
+        if (command is not ("install-service" or "--install-service" or "uninstall-service" or "--uninstall-service"))
+            return false;
+
+        try
+        {
+            await HandleServiceCommandAsync(command, args);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.Message);
+            Environment.ExitCode = 1;
+        }
+
+        return true;
+    }
+
+    static async Task HandleServiceCommandAsync(string command, string[] args)
+    {
+        var serviceName = GetOption(args, "--service-name") ?? "AiRouter";
+
+        if (command is "install-service" or "--install-service")
+        {
+            EnsureAdministrator();
+
+            var exePath = Environment.ProcessPath;
+            if (string.IsNullOrWhiteSpace(exePath) || !File.Exists(exePath))
+                throw new InvalidOperationException("Impossibile determinare il percorso dell'eseguibile corrente.");
+
+            var displayName = GetOption(args, "--display-name") ?? "AI Router";
+            var startupType = GetOption(args, "--startup") ?? "auto";
+            var serviceArgs = GetOption(args, "--service-args") ?? string.Empty;
+            var binPath = string.IsNullOrWhiteSpace(serviceArgs)
+                ? Quote(exePath)
+                : $"{Quote(exePath)} {serviceArgs}";
+
+            await RunScAsync("create", serviceName, "binPath=", binPath, "start=", startupType, "DisplayName=", displayName);
+            await RunScAsync("description", serviceName, "AI model router service");
+
+            if (HasSwitch(args, "--start"))
+                await RunScAsync("start", serviceName);
+
+            Console.WriteLine($"Servizio '{serviceName}' installato: {binPath}");
+            return;
+        }
+
+        EnsureAdministrator();
+        await RunScAsync(["stop", serviceName], [1060, 1062]);
+        await RunScAsync(["delete", serviceName], [1060]);
+        Console.WriteLine($"Servizio '{serviceName}' rimosso.");
+    }
+
+    static string? GetOption(string[] args, string name)
+    {
+        var idx = Array.FindIndex(args, a => string.Equals(a, name, StringComparison.OrdinalIgnoreCase));
+        if (idx < 0 || idx + 1 >= args.Length)
+            return null;
+
+        return args[idx + 1];
+    }
+
+    static bool HasSwitch(string[] args, string name) =>
+        args.Any(a => string.Equals(a, name, StringComparison.OrdinalIgnoreCase));
+
+    static string Quote(string value) => $"\"{value.Replace("\"", "\\\"")}\"";
+
+    static void EnsureAdministrator()
+    {
+        var identity = System.Security.Principal.WindowsIdentity.GetCurrent();
+        var principal = new System.Security.Principal.WindowsPrincipal(identity);
+        if (!principal.IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator))
+            throw new InvalidOperationException("Eseguire il comando da una console avviata come amministratore.");
+    }
+
+    static async Task RunScAsync(params string[] arguments) =>
+        await RunScAsync(arguments, []);
+
+    static async Task RunScAsync(string[] arguments, int[] ignoreExitCodes)
+    {
+        var startInfo = new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = "sc.exe",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };
+
+        foreach (var argument in arguments)
+            startInfo.ArgumentList.Add(argument);
+
+        using var process = global::System.Diagnostics.Process.Start(startInfo)
+            ?? throw new InvalidOperationException("Impossibile avviare sc.exe.");
+
+        var outputTask = process.StandardOutput.ReadToEndAsync();
+        var errorTask = process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+
+        var output = await outputTask;
+        var error = await errorTask;
+
+        if (!string.IsNullOrWhiteSpace(output))
+            Console.Write(output);
+        if (!string.IsNullOrWhiteSpace(error))
+            Console.Error.Write(error);
+
+        if (process.ExitCode != 0 && !ignoreExitCodes.Contains(process.ExitCode))
+            throw new InvalidOperationException($"sc.exe {string.Join(' ', arguments)} failed with exit code {process.ExitCode}.");
     }
 
     // Runs on a background thread; polls for Ctrl+K and Ctrl+U
@@ -247,9 +372,15 @@ class Program
     }
 
     // Called after the web host shuts down
-    static async Task AskAndKillAsync(ProcessRegistry registry)
+    static async Task AskAndKillAsync(ProcessRegistry registry, bool isWindowsService)
     {
         if (!registry.AnyOwnedAlive) return;
+
+        if (isWindowsService)
+        {
+            await registry.KillAllAsync();
+            return;
+        }
 
         Console.WriteLine();
         Console.Write("[shutdown] Managed processes started by the router are still running. Terminate them? [Y/n]: ");
@@ -269,4 +400,3 @@ class Program
         }
     }
 }
-

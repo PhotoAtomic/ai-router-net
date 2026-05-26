@@ -113,6 +113,65 @@ Le chiavi API possono essere referenziate nel config file usando il formato `${V
 dotnet run
 ```
 
+### Pubblicazione Windows
+
+```powershell
+dotnet publish -c Release -r win-x64 --self-contained true
+```
+
+L'eseguibile viene generato in `bin\Release\net10.0\win-x64\publish`. Il servizio usa `appsettings.json` dalla stessa cartella dell'eseguibile, quindi la configurazione resta valida anche quando Windows avvia il processo da `C:\Windows\System32`.
+
+### Installazione come servizio Windows
+
+Da una console PowerShell avviata come amministratore, usando direttamente l'eseguibile pubblicato:
+
+```powershell
+cd "C:\Program Files\AiRouter"
+.\AiRouter.exe --install-service --start
+```
+
+Lo stesso `AiRouter.exe` funziona quindi in entrambe le modalita': se lanciato senza comandi parte come normale applicazione console, se lanciato con `--install-service` registra se stesso come servizio Windows.
+
+In alternativa, dallo stesso repository:
+
+```powershell
+.\scripts\Install-WindowsService.ps1 -Start
+```
+
+Comandi utili:
+
+```powershell
+Start-Service AiRouter
+Stop-Service AiRouter
+Get-Service AiRouter
+.\AiRouter.exe --uninstall-service
+```
+
+Per abilitare logging e dashboard quando AiRouter parte come servizio, registra il servizio passando `--log` negli argomenti runtime:
+
+```powershell
+.\AiRouter.exe --install-service --service-args "--log" --start
+```
+
+Con `--log` senza percorso, `requests.jsonl` viene creato nella stessa cartella di `AiRouter.exe`. Se il servizio era gia' installato senza logging, rimuoverlo e reinstallarlo:
+
+```powershell
+.\AiRouter.exe --uninstall-service
+.\AiRouter.exe --install-service --service-args "--log" --start
+```
+
+Per usare un percorso log esplicito:
+
+```powershell
+.\AiRouter.exe --install-service --service-args "--log ""C:\ProgramData\AiRouter\requests.jsonl""" --start
+```
+
+Per verificare gli argomenti registrati nel servizio:
+
+```powershell
+sc.exe qc AiRouter
+```
+
 ### Esempio di richiesta
 
 ```bash
